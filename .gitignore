@@ -1,0 +1,15 @@
+# Ignore heavy directories
+checkpoints/
+results/
+models/
+
+# Common junk to ignore
+__pycache__/
+.ipynb_checkpoints/
+*.pt
+*.pth
+*.npz
+*.log
+*.png
+*.jpg
+*.zip

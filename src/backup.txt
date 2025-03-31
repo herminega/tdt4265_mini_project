@@ -1,0 +1,210 @@
+def get_dataset(data_dir, subset="train", augment=False):
+    """Loads MRI dataset from the given subset (train/test) directory."""
+    
+    subset_dir = os.path.join(data_dir, subset)  # e.g., "/cluster/.../HNTS-MRG/train"
+    
+    transforms = [
+        LoadImage(image_only=True),  
+        EnsureChannelFirst(),  
+        ScaleIntensity(),  
+    ]
+
+    if augment:
+        transforms.extend([
+            RandFlip(prob=0.5, spatial_axis=0),
+            RandRotate(range_x=0.1, prob=0.5),
+            RandZoom(min_zoom=0.9, max_zoom=1.1, prob=0.5)
+        ])
+
+    # Recursively find all .nii.gz files inside the subset directory
+    images = sorted(glob.glob(os.path.join(subset_dir, "**", "*"), recursive=True))
+    dataset = Dataset(data=images, transform=Compose(transforms))
+
+    return dataset
+
+
+
+
+
+
+def get_mri_data_loader(data_dir, batch_size=2, validation_fraction=0.1):
+    """Loads MRI dataset using MONAI and returns train & validation loaders."""
+
+    transforms = Compose([
+        LoadImage(image_only=True),  # Load MRI images
+        EnsureChannelFirst(),        # Ensure shape (C, H, W, D)
+        ScaleIntensity(),            # Normalize intensity
+        ToTensor()                   # Convert to PyTorch tensor
+    ])
+    
+    # Load all images & segmentation masks
+    images = sorted([os.path.join(data_dir, "images", f) for f in os.listdir(os.path.join(data_dir, "images")) if f.endswith(".nii.gz")])
+    masks = sorted([os.path.join(data_dir, "masks", f) for f in os.listdir(os.path.join(data_dir, "masks")) if f.endswith(".nii.gz")])
+
+    # Ensure image-mask pairs match
+    assert len(images) == len(masks), "Mismatch between number of images and masks!"
+
+    dataset = Dataset(data=[{"image": img, "label": mask} for img, mask in zip(images, masks)], transform=transforms)
+
+    # Split dataset into train/validation
+    num_samples = len(dataset)
+    indices = torch.randperm(num_samples)
+    split_idx = int(num_samples * validation_fraction)
+    
+    train_indices, val_indices = indices[split_idx:], indices[:split_idx]
+    
+    train_loader = DataLoader(dataset, batch_size=batch_size, sampler=torch.utils.data.SubsetRandomSampler(train_indices))
+    val_loader = DataLoader(dataset, batch_size=batch_size, sampler=torch.utils.data.SubsetRandomSampler(val_indices))
+
+    return train_loader, val_loader
+
+
+
+import os
+import torch
+from monai.transforms import (
+    LoadImaged,  
+    EnsureChannelFirstd,
+    ScaleIntensityd,
+    ResizeWithPadOrCropd,
+    ToTensord,
+    Compose,
+)
+from monai.data import Dataset, DataLoader, pad_list_data_collate
+import nibabel as nib
+
+
+def get_mri_data_loader(data_dir: str, subset="train", batch_size=2, validation_fraction=0.1):
+    """
+    Loads MRI dataset using MONAI, ensuring correct pairing of images & masks.
+    - subset: "train" or "test"
+    - batch_size: Number of samples per batch
+    """
+
+    transforms = Compose([
+        LoadImaged(keys=["image", "label"]),
+        EnsureChannelFirstd(keys=["image", "label"]),
+        ScaleIntensityd(keys=["image"]),
+        ResizeWithPadOrCropd(keys=["image", "label"], spatial_size=(128, 128, 64)),  # Ensure same size
+        ToTensord(keys=["image", "label"]),
+    ])
+
+    # Path to train or test directory
+    subset_dir = os.path.join(data_dir, subset)
+    patient_folders = sorted(os.listdir(subset_dir))
+
+    # Store paired image-mask file paths
+    data_list = []
+    
+    for patient_id in patient_folders:
+        preRT_path = os.path.join(subset_dir, patient_id, "preRT")
+
+        # Find image & mask
+        image_file = next((f for f in os.listdir(preRT_path) if f.endswith("T2.nii.gz")), None)
+        mask_file = next((f for f in os.listdir(preRT_path) if f.endswith("mask.nii.gz")), None)
+
+        full_image_path = os.path.join(preRT_path, image_file)
+        full_mask_path = os.path.join(preRT_path, mask_file)
+        
+        image_shape = nib.load(full_image_path).shape
+        mask_shape = nib.load(full_mask_path).shape
+
+
+        data_list.append({
+            "image": full_image_path,
+            "label": full_mask_path
+        })
+
+    #Use dictionary-based Dataset
+    dataset = Dataset(data=data_list, transform=transforms)
+
+    # Split into training & validation sets
+    num_samples = len(dataset)
+    indices = torch.randperm(num_samples)
+    split_idx = int(num_samples * validation_fraction)
+
+    train_indices, val_indices = indices[split_idx:], indices[:split_idx]
+
+    train_loader = DataLoader(dataset, batch_size=batch_size, sampler=torch.utils.data.SubsetRandomSampler(train_indices), collate_fn=pad_list_data_collate, num_workers=0)
+    val_loader = DataLoader(dataset, batch_size=batch_size, sampler=torch.utils.data.SubsetRandomSampler(val_indices), collate_fn=pad_list_data_collate, num_workers=0)
+
+    return train_loader, val_loader
+
+
+import torch
+import torch.optim as optim
+from monai.losses import DiceLoss
+from model import UNet3D
+from dataloader import get_debug_dataloader  # ✅ Use simpler dataloader
+import psutil
+
+class Trainer:
+    """Trains the UNet3D model on the MRI dataset."""
+    torch.cuda.empty_cache()  # ✅ Clears cached memory
+    torch.backends.cudnn.benchmark = False  # ✅ Optimizes GPU execution
+    
+    def __init__(self, data_dir, in_channels, out_channels, batch_size=2, validation_fraction=0.1, subset="train"):
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        print(f"Using device: {self.device}")  
+        
+        self.model = UNet3D(in_channels=in_channels, out_channels=out_channels).to(self.device)
+
+        self.train_loader, self.val_loader = get_debug_dataloader(data_dir, batch_size=batch_size)
+        self.optimizer = optim.Adam(self.model.parameters(), 1e-4)
+        self.loss_function = DiceLoss(sigmoid=True).to(self.device)
+
+    def train(self, epochs):
+        for epoch in range(epochs):
+            print(f"Epoch {epoch+1} training started")
+            self.model.train()
+            epoch_loss = 0
+            
+            for batch_idx, batch in enumerate(self.train_loader):
+                inputs = batch["image"].to(self.device, dtype=torch.float32)
+                labels = batch["label"].to(self.device, dtype=torch.float32)
+
+                self.optimizer.zero_grad()
+                outputs = self.model(inputs)  # Forward pass
+                loss = self.loss_function(outputs, labels)  # ⚠ Remove extra sigmoid!
+                
+                # Detect NaN loss and stop training early
+                if torch.isnan(loss):
+                    print(f"NaN detected in loss at batch {batch_idx}, stopping training.")
+                    return  
+
+                loss.backward()
+                self.optimizer.step()
+                
+                epoch_loss += loss.item()
+
+                if batch_idx % 10 == 0:  # Print every 10 batches
+                    print(f"Epoch {epoch+1}, Batch {batch_idx}, Loss: {loss.item():.4f}")
+            
+            print(f"Epoch {epoch+1} completed, Avg Loss: {epoch_loss / len(self.train_loader):.4f}")
+
+
+    def validate(self):
+        self.model.eval()
+        val_loss = 0
+        with torch.no_grad():
+            for batch in self.val_loader:
+                inputs = batch.to(self.device)
+                outputs = self.model(inputs)
+                loss = self.loss_function(outputs, inputs)
+                val_loss += loss.item()
+        print(f"Validation Loss: {val_loss/len(self.val_loader)}")
+    
+    def save_model(self, path="results/model.pth"):
+        torch.save(self.model.state_dict(), path)
+        print(f"Model saved to {path}")
+    
+if __name__ == "__main__":
+    # Set your dataset directory
+    data_dir = "/cluster/projects/vc/data/mic/open/HNTS-MRG"
+    
+
+    # Initialize the Trainer
+    trainer = Trainer(data_dir=data_dir, in_channels=1, out_channels=1, batch_size=1, validation_fraction=0.1, subset="train")
+
+    # Run training for 4 epochs
+    trainer.train(epochs=4)
