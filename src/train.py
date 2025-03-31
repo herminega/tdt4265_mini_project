@@ -32,7 +32,6 @@ class Trainer:
 
         # Initialize model & move to GPU if available
         self.model = get_model(model_type="swinunetr", in_channels=in_channels, out_channels=out_channels, pretrained=True).to(self.device)
-        print("Loaded type:", type(self.model))
 
         # Load Data
         self.train_loader, self.val_loader = get_mri_dataloader(data_dir, "train", batch_size, validation_fraction=0.1)
@@ -50,18 +49,13 @@ class Trainer:
 
         # Optimizer with weight decay (L2 regularization)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=learning_rate, weight_decay=1e-5)
-
-        # Learning rate scheduler (Cosine Annealing)
         self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=epochs)
 
         # Mixed precision training
         self.scaler = GradScaler()
-
-        # Training settings
         self.epochs = epochs
         self.early_stop_count = early_stop_count
         self.global_step = 0
-        self.start_time = time.time()
 
         # Training & validation history tracking
         self.train_history = dict(loss=collections.OrderedDict(), dice=collections.OrderedDict())
@@ -71,162 +65,147 @@ class Trainer:
         self.checkpoint_dir = pathlib.Path("checkpoints")
 
         # Initialize DiceMetric once (before training starts)
-        self.dice_metric = DiceMetric(include_background=True, reduction="none", get_not_nans=True)
+        self.dice_metric = DiceMetric(include_background=False, reduction="none", get_not_nans=True)
 
-    def train_step(self, batch):
-        """
-        Performs forward and backward pass for one batch.
-        """
+    def train_step(self, inputs, labels):
         self.model.train()
-        inputs, labels = batch["image"].to(self.device), batch["label"].to(self.device)
-        
         self.optimizer.zero_grad()
-               
-        with autocast(device_type=self.device.type):  # Enable mixed precision
+
+        with autocast(device_type=self.device.type):
             outputs = self.model(inputs)
-            # Compute loss using raw logits
             loss = self.loss_criterion(outputs, labels)
-        
-        # Backpropagation with mixed precision
+
         self.scaler.scale(loss).backward()
         self.scaler.step(self.optimizer)
         self.scaler.update()
-          
-        # Compute Dice score using MONAI DiceMetric
-        self.dice_metric.reset()
-        softmax_outputs = torch.softmax(outputs, dim=1)
-        self.dice_metric(softmax_outputs, labels)
-        dice_scores, _ = self.dice_metric.aggregate()
-        dice_per_class = dice_scores.detach().cpu().numpy()
-        overall_dice = dice_per_class.mean()
 
-        return loss.item(), overall_dice, dice_per_class
-    
+        softmax_outputs = torch.softmax(outputs, dim=1)
+
+        # Compute per-class Dice (batch-level — not aggregated!)
+        self.dice_metric.reset()
+        self.dice_metric(softmax_outputs, labels)
+        per_class_dice, valid_mask = self.dice_metric.aggregate()
+
+        per_class_dice = per_class_dice.detach().cpu().numpy()
+        valid_mask = valid_mask.detach().cpu().numpy().astype(bool)
+        
+        # Safely calculate mean only on valid classes
+        if valid_mask.any():
+            mean_dice = per_class_dice[valid_mask].mean()
+        else:
+            mean_dice = np.nan
+
+        return loss.item(), mean_dice, per_class_dice, valid_mask
+
     def save_nifti(self, tensor, filename):
-        """ Convert PyTorch tensor to NIfTI and save it. """
-        tensor = tensor.cpu().numpy().squeeze()  # Convert tensor to numpy & remove batch dim
-        tensor = tensor.astype(np.uint8)  # Convert to uint8 (safe for segmentations)
-    
-        img = nib.Nifti1Image(tensor, affine=np.eye(4))  # Identity affine (adjust if needed)
+        tensor = tensor.cpu().numpy().squeeze().astype(np.uint8)
+        img = nib.Nifti1Image(tensor, affine=np.eye(4))
         nib.save(img, filename)
-      
+    
+    def _save_predictions(self, input_tensor, label_tensor, output_tensor, index, output_dir):
+        label_discrete = torch.argmax(label_tensor, dim=0)
+        prediction_discrete = torch.argmax(output_tensor, dim=0)
+        self.save_nifti(input_tensor, f"{output_dir}/image_{index}.nii.gz")
+        self.save_nifti(label_discrete, f"{output_dir}/label_{index}.nii.gz")
+        self.save_nifti(prediction_discrete, f"{output_dir}/prediction_{index}.nii.gz")
 
     def validate(self, save_predictions=True, output_dir="results/predictions"):
-        """
-        Computes validation loss and per-class dice score.
-        """
         self.model.eval()
-        val_loss = 0
-        all_dice_scores = []
-
-        num_batches = len(self.val_loader)
         self.dice_metric.reset()
         os.makedirs(output_dir, exist_ok=True)
 
+        total_loss = 0
         with torch.no_grad():
-            for batch_idx, batch in enumerate(self.val_loader):
+            for idx, batch in enumerate(self.val_loader):
                 inputs, labels = batch["image"].to(self.device), batch["label"].to(self.device)
-
-                with autocast(device_type=self.device.type):
+                with autocast(self.device.type):
                     outputs = self.model(inputs)
                     loss = self.loss_criterion(outputs, labels)
 
-                val_loss += loss.item()
-
+                total_loss += loss.item()
                 softmax_outputs = torch.softmax(outputs, dim=1)
                 self.dice_metric(softmax_outputs, labels)
 
-                # Save predictions (only first few batches)
-                if save_predictions and batch_idx < 5:
-                    labels_discrete = torch.argmax(labels, dim=1)
-                    self.save_nifti(tensor=inputs[0], filename=f"{output_dir}/image_{batch_idx}.nii.gz")
-                    self.save_nifti(tensor=labels_discrete[0], filename=f"{output_dir}/label_{batch_idx}.nii.gz")
-                    self.save_nifti(tensor=torch.argmax(softmax_outputs[0], dim=0), filename=f"{output_dir}/prediction_{batch_idx}.nii.gz")
+                if save_predictions and idx < 5:
+                    self._save_predictions(inputs[0], labels[0], softmax_outputs[0], idx, output_dir)
 
-        # Aggregate after the full epoch
-        dice_scores, _ = self.dice_metric.aggregate()
-        dice_per_class = dice_scores.detach().cpu().numpy()
-        overall_dice = dice_per_class.mean()
-        avg_loss = val_loss / num_batches
+        avg_loss = total_loss / len(self.val_loader)
 
-        # Log to history
+        # Aggregate Dice scores
+        per_class_dice = self.dice_metric.aggregate().cpu().numpy()  # shape: (2,) → class 1 and 2
+        mean_dice = per_class_dice.mean()  # mean of class 1 and 2
+
+        # Save to validation history
         self.validation_history["loss"][self.global_step] = avg_loss
-        self.validation_history["dice"][self.global_step] = overall_dice
+        self.validation_history["dice"][self.global_step] = mean_dice
+        self.validation_history.setdefault("dice_class1", {})[self.global_step] = per_class_dice[0]
+        self.validation_history.setdefault("dice_class2", {})[self.global_step] = per_class_dice[1]
 
-        # Print summary
-        print(f"\nValidation - Loss: {avg_loss:.4f}, Dice Score: {overall_dice:.4f}")
-        for i, score in enumerate(dice_per_class):
-            print(f"   ↪ Class {i}: Dice = {score:.4f}")
+        print(f"\nValidation - Loss: {avg_loss:.4f}")
+        print(f"  GTVp (class 1) Dice: {per_class_dice[0]:.4f}")
+        print(f"  GTVn (class 2) Dice: {per_class_dice[1]:.4f}")
+        print(f"  Mean Dice (tumor only): {mean_dice:.4f}")
 
-        return avg_loss, overall_dice
-
+        return avg_loss, mean_dice
 
     def should_early_stop(self):
-        """
-        Checks if validation loss hasn't improved in `early_stop_count` epochs.
-        """
         val_loss = self.validation_history["loss"]
         if len(val_loss) < self.early_stop_count:
             return False
-
-        recent_losses = list(val_loss.values())[-self.early_stop_count:]
-        if recent_losses[0] == min(recent_losses):  # No improvement
-            print("Early stopping triggered due to no improvement.")
-            return True
-        return False
+        recent = list(val_loss.values())[-self.early_stop_count:]
+        return recent[0] == min(recent)
 
     def train(self):
-        """
-        Trains the model for `self.epochs` epochs.
-        """
-
         for epoch in range(1, self.epochs + 1):
-            epoch_loss = 0
-            epoch_dice = 0
-            num_batches = len(self.train_loader)    
-            progress_bar = tqdm(self.train_loader, desc=f"Epoch {epoch}", dynamic_ncols=True, leave=True)
-            for batch_idx, batch in enumerate(progress_bar):
-                loss, dice, dice_per_class = self.train_step(batch)
-                epoch_loss += loss
-                epoch_dice += dice
+            print(f"\n=== Epoch {epoch} ===")
+            epoch_loss = 0.0
+            class_dice_totals = np.zeros(2)
+            class_counts = np.zeros(2)
+            valid_mean_dices = []
+
+            progress_bar = tqdm(self.train_loader, desc="Training", dynamic_ncols=True)
+            for batch in progress_bar:
+                inputs, labels = batch["image"].to(self.device), batch["label"].to(self.device)
+                loss, mean_dice, per_class_dice, valid_mask = self.train_step(inputs, labels)
                 self.global_step += 1
+                epoch_loss += loss
 
-                # Store loss history
+                # Store valid per-class Dice
+                for i in range(2):  # class 1 & 2
+                    if i < len(per_class_dice) and bool(valid_mask[i]):
+                        class_dice_totals[i] += per_class_dice[i]
+                        class_counts[i] += 1
+
+                if not np.isnan(mean_dice):
+                    valid_mean_dices.append(mean_dice)
+
                 self.train_history["loss"][self.global_step] = loss
-                self.train_history["dice"][self.global_step] = dice
-                
-                # Safely extract class scores (default to 0.0 if missing)
-                gtvp_dice = float(dice_per_class[1]) if len(dice_per_class) > 1 else 0.0
-                gtvn_dice = float(dice_per_class[2]) if len(dice_per_class) > 2 else 0.0
+                self.train_history["dice"][self.global_step] = mean_dice if not np.isnan(mean_dice) else 0.0
 
-                progress_bar.set_postfix(
-                    loss=f"{loss:.4f}",
-                    dice=f"{dice:.4f}",
-                    GTVp=f"{gtvp_dice:.3f}",
-                    GTVn=f"{gtvn_dice:.3f}"
-                )
+                progress_bar.set_postfix(loss=f"{loss:.4f}", dice=f"{mean_dice:.4f}" if not np.isnan(mean_dice) else "NaN")
 
+            avg_loss = epoch_loss / len(self.train_loader)
+            avg_class_dices = np.divide(class_dice_totals, class_counts, out=np.zeros_like(class_dice_totals), where=class_counts > 0)
+            mean_dice = np.mean(valid_mean_dices) if valid_mean_dices else 0.0
 
-            progress_bar.close()  # Ensure clean closing of tqdm bar
+            print(f"\nEpoch Summary:")
+            print(f"  Loss: {avg_loss:.4f}")
+            print(f"  GTVp (class 1) Dice: {avg_class_dices[0]:.4f}")
+            print(f"  GTVn (class 2) Dice: {avg_class_dices[1]:.4f}")
+            print(f"  Mean Dice (tumor only): {mean_dice:.4f}")
 
-            # Compute average loss/dice for epoch
-            avg_loss = epoch_loss / num_batches
-            avg_dice = epoch_dice / num_batches
-            print(f"Epoch {epoch} - Loss: {avg_loss:.4f}, Dice Score: {avg_dice:.4f}")
-            
-            # Validation step
-            val_loss, val_dice = self.validate(save_predictions = True, output_dir = "results/predictions")
+            # Store averages
+            self.train_history.setdefault("dice_class1", {})[self.global_step] = avg_class_dices[0]
+            self.train_history.setdefault("dice_class2", {})[self.global_step] = avg_class_dices[1]
 
-            self.validation_history["loss"][self.global_step] = val_loss
-            self.validation_history["dice"][self.global_step] = val_dice
-
-            # Update learning rate scheduler
+            val_loss, val_dice = self.validate()
             self.scheduler.step()
-
-            # Save checkpoint & check early stopping
             self.save_checkpoint()
+
             if self.should_early_stop():
+                print("Early stopping triggered.")
                 break
+
 
     def save_checkpoint(self):
         """
@@ -256,7 +235,11 @@ class Trainer:
 
 if __name__ == "__main__":
     # Set dataset directory
-    data_dir = "/cluster/projects/vc/data/mic/open/HNTS-MRG"
+    """
+    IDUN: /cluster/projects/vc/data/mic/open/HNTS-MRG
+–   Cybele: /datasets/tdt4265/mic/open/HNTS-MRG
+    """
+    data_dir = "/datasets/tdt4265/mic/open/HNTS-MRG"
 
     # Initialize Trainer
     trainer = Trainer(
