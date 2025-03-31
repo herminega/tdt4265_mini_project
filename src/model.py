@@ -76,8 +76,6 @@ def get_model(model_type="unet", in_channels=1, out_channels=3, pretrained=False
         return UNet3D(in_channels=in_channels, out_channels=out_channels)
 
     elif model_type.lower() == "dynunet":
-        if pretrained:
-            return get_pretrained_bundle_model("prostate_mri_segmentation")
         return DynUNet(in_channels=in_channels, out_channels=out_channels)
 
     elif model_type.lower() == "swinunetr":

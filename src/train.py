@@ -1,5 +1,4 @@
 import torch
-import time
 import collections
 import pathlib
 import os
@@ -31,13 +30,13 @@ class Trainer:
         print(f"Using device: {self.device}")
 
         # Initialize model & move to GPU if available
-        self.model = get_model(model_type="swinunetr", in_channels=in_channels, out_channels=out_channels, pretrained=True).to(self.device)
+        self.model = get_model(model_type="dynunet", in_channels=in_channels, out_channels=out_channels, pretrained=False).to(self.device)
 
         # Load Data
         self.train_loader, self.val_loader = get_mri_dataloader(data_dir, "train", batch_size, validation_fraction=0.1)
         
         ### Loss functions options ###
-        class_weights = torch.tensor([0.1, 1.0, 1.5]).to(self.device)  # Example: Background=0.01, GTVp=1.0, GTVn=2.0
+        class_weights = torch.tensor([0.01, 1.0, 3.0]).to(self.device)
         # 1. (Generalized Dice Loss with softmax)
         #self.loss_criterion = GeneralizedDiceLoss(softmax=True, include_background=True) 
         # 2. Class weights for handling imbalance
@@ -45,7 +44,7 @@ class Trainer:
         #    softmax=True, 
         #    weight=class_weights)
         # 3. Combined Dice + Cross-Entropy Loss
-        self.loss_criterion = DiceCELoss(softmax=True, lambda_dice=0.3, lambda_ce=0.5, weight=class_weights)
+        self.loss_criterion = DiceCELoss(to_onehot_y=False, softmax=True, lambda_dice=0.7, lambda_ce=0.3)
 
         # Optimizer with weight decay (L2 regularization)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=learning_rate, weight_decay=1e-5)
@@ -79,23 +78,8 @@ class Trainer:
         self.scaler.step(self.optimizer)
         self.scaler.update()
 
-        softmax_outputs = torch.softmax(outputs, dim=1)
+        return loss.item(), outputs, labels  # return predictions and targets to compute Dice later
 
-        # Compute per-class Dice (batch-level — not aggregated!)
-        self.dice_metric.reset()
-        self.dice_metric(softmax_outputs, labels)
-        per_class_dice, valid_mask = self.dice_metric.aggregate()
-
-        per_class_dice = per_class_dice.detach().cpu().numpy()
-        valid_mask = valid_mask.detach().cpu().numpy().astype(bool)
-        
-        # Safely calculate mean only on valid classes
-        if valid_mask.any():
-            mean_dice = per_class_dice[valid_mask].mean()
-        else:
-            mean_dice = np.nan
-
-        return loss.item(), mean_dice, per_class_dice, valid_mask
 
     def save_nifti(self, tensor, filename):
         tensor = tensor.cpu().numpy().squeeze().astype(np.uint8)
@@ -113,6 +97,10 @@ class Trainer:
         self.model.eval()
         self.dice_metric.reset()
         os.makedirs(output_dir, exist_ok=True)
+        
+        total_TP = {1: 0, 2: 0}
+        total_FP = {1: 0, 2: 0}
+        total_FN = {1: 0, 2: 0}
 
         total_loss = 0
         with torch.no_grad():
@@ -121,32 +109,61 @@ class Trainer:
                 with autocast(self.device.type):
                     outputs = self.model(inputs)
                     loss = self.loss_criterion(outputs, labels)
-
+                
                 total_loss += loss.item()
-                softmax_outputs = torch.softmax(outputs, dim=1)
+                
+                softmax_outputs = torch.softmax(outputs, dim=1)             
                 self.dice_metric(softmax_outputs, labels)
+                
+                pred = torch.argmax(softmax_outputs, dim=1)
+                true = labels.argmax(dim=1)
+                #labels.shape
+                print(f"Pred shape: {pred.shape}, True shape: {true.shape}")
+
+                for cls in [1, 2]:
+                    TP = ((pred == cls) & (true == cls)).sum().item()
+                    FP = ((pred == cls) & (true != cls)).sum().item()
+                    FN = ((pred != cls) & (true == cls)).sum().item()
+
+                    total_TP[cls] += TP
+                    total_FP[cls] += FP
+                    total_FN[cls] += FN
 
                 if save_predictions and idx < 5:
                     self._save_predictions(inputs[0], labels[0], softmax_outputs[0], idx, output_dir)
+        
+        for cls in [1, 2]:
+            TP = total_TP[cls]
+            FP = total_FP[cls]
+            FN = total_FN[cls]
+            precision = TP / (TP + FP + 1e-6)
+            recall = TP / (TP + FN + 1e-6)
+            print(f"Class {cls}: Precision {precision:.4f}, Recall {recall:.4f}")
 
         avg_loss = total_loss / len(self.val_loader)
 
-        # Aggregate Dice scores
-        per_class_dice = self.dice_metric.aggregate().cpu().numpy()  # shape: (2,) → class 1 and 2
-        mean_dice = per_class_dice.mean()  # mean of class 1 and 2
+        # Aggregate Dice scores across validation epoch
+        per_class_dice, _ = self.dice_metric.aggregate()
+        per_class_dice = per_class_dice.cpu().numpy()  # shape: (B, C)
+        class_dice_means = np.nanmean(per_class_dice, axis=0)
+
+        class1_dice = class_dice_means[0]
+        class2_dice = class_dice_means[1]
+        mean_dice = np.nanmean(class_dice_means)
 
         # Save to validation history
         self.validation_history["loss"][self.global_step] = avg_loss
         self.validation_history["dice"][self.global_step] = mean_dice
-        self.validation_history.setdefault("dice_class1", {})[self.global_step] = per_class_dice[0]
-        self.validation_history.setdefault("dice_class2", {})[self.global_step] = per_class_dice[1]
+        self.validation_history.setdefault("dice_class1", {})[self.global_step] = class1_dice
+        self.validation_history.setdefault("dice_class2", {})[self.global_step] = class2_dice
 
         print(f"\nValidation - Loss: {avg_loss:.4f}")
-        print(f"  GTVp (class 1) Dice: {per_class_dice[0]:.4f}")
-        print(f"  GTVn (class 2) Dice: {per_class_dice[1]:.4f}")
+        print(f"  GTVp (class 1) Dice: {class1_dice:.4f}")
+        print(f"  GTVn (class 2) Dice: {class2_dice:.4f}")
         print(f"  Mean Dice (tumor only): {mean_dice:.4f}")
 
         return avg_loss, mean_dice
+
 
     def should_early_stop(self):
         val_loss = self.validation_history["loss"]
@@ -159,44 +176,42 @@ class Trainer:
         for epoch in range(1, self.epochs + 1):
             print(f"\n=== Epoch {epoch} ===")
             epoch_loss = 0.0
-            class_dice_totals = np.zeros(2)
-            class_counts = np.zeros(2)
-            valid_mean_dices = []
+            self.dice_metric.reset()
 
             progress_bar = tqdm(self.train_loader, desc="Training", dynamic_ncols=True)
             for batch in progress_bar:
                 inputs, labels = batch["image"].to(self.device), batch["label"].to(self.device)
-                loss, mean_dice, per_class_dice, valid_mask = self.train_step(inputs, labels)
+        
+                loss, outputs, targets = self.train_step(inputs, labels)
                 self.global_step += 1
                 epoch_loss += loss
-
-                # Store valid per-class Dice
-                for i in range(2):  # class 1 & 2
-                    if i < len(per_class_dice) and bool(valid_mask[i]):
-                        class_dice_totals[i] += per_class_dice[i]
-                        class_counts[i] += 1
-
-                if not np.isnan(mean_dice):
-                    valid_mean_dices.append(mean_dice)
+                
+                softmax_outputs = torch.softmax(outputs, dim=1)
+                self.dice_metric(softmax_outputs, targets)
 
                 self.train_history["loss"][self.global_step] = loss
-                self.train_history["dice"][self.global_step] = mean_dice if not np.isnan(mean_dice) else 0.0
+                progress_bar.set_postfix(loss=f"{loss:.4f}")
 
-                progress_bar.set_postfix(loss=f"{loss:.4f}", dice=f"{mean_dice:.4f}" if not np.isnan(mean_dice) else "NaN")
+            # Aggregate Dice over the whole epoch
+            per_class_dice, _ = self.dice_metric.aggregate()
+            per_class_dice = per_class_dice.cpu().numpy()  # shape: (B, C)
+            class_dice_means = np.nanmean(per_class_dice, axis=0)  # shape: (C,)
+
+            class1_dice = class_dice_means[0]
+            class2_dice = class_dice_means[1]
+            mean_dice = np.nanmean(class_dice_means)
 
             avg_loss = epoch_loss / len(self.train_loader)
-            avg_class_dices = np.divide(class_dice_totals, class_counts, out=np.zeros_like(class_dice_totals), where=class_counts > 0)
-            mean_dice = np.mean(valid_mean_dices) if valid_mean_dices else 0.0
 
             print(f"\nEpoch Summary:")
             print(f"  Loss: {avg_loss:.4f}")
-            print(f"  GTVp (class 1) Dice: {avg_class_dices[0]:.4f}")
-            print(f"  GTVn (class 2) Dice: {avg_class_dices[1]:.4f}")
+            print(f"  GTVp (class 1) Dice: {class1_dice:.4f}")
+            print(f"  GTVn (class 2) Dice: {class2_dice:.4f}")
             print(f"  Mean Dice (tumor only): {mean_dice:.4f}")
 
-            # Store averages
-            self.train_history.setdefault("dice_class1", {})[self.global_step] = avg_class_dices[0]
-            self.train_history.setdefault("dice_class2", {})[self.global_step] = avg_class_dices[1]
+            self.train_history["dice"][self.global_step] = mean_dice
+            self.train_history.setdefault("dice_class1", {})[self.global_step] = class1_dice
+            self.train_history.setdefault("dice_class2", {})[self.global_step] = class2_dice
 
             val_loss, val_dice = self.validate()
             self.scheduler.step()
@@ -239,12 +254,12 @@ if __name__ == "__main__":
     IDUN: /cluster/projects/vc/data/mic/open/HNTS-MRG
 –   Cybele: /datasets/tdt4265/mic/open/HNTS-MRG
     """
-    data_dir = "/datasets/tdt4265/mic/open/HNTS-MRG"
+    data_dir = "/cluster/projects/vc/data/mic/open/HNTS-MRG"
 
     # Initialize Trainer
     trainer = Trainer(
         data_dir=data_dir,
-        batch_size=2,
+        batch_size=3,
         learning_rate=5e-4,
         early_stop_count=5,
         epochs=10,

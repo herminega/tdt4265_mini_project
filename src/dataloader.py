@@ -14,10 +14,12 @@ from monai.transforms import (
     Rand3DElasticd,
     HistogramNormalized,
     AdjustContrastd,
+    EnsureTyped,
+    RandCropByLabelClassesd,
     ToTensord,
     Compose,
 )
-from monai.data import Dataset, DataLoader
+from monai.data import Dataset, DataLoader, pad_list_data_collate
 import nibabel as nib
 from torch.utils.data import Subset
 import numpy as np
@@ -42,17 +44,29 @@ def get_mri_dataloader(data_dir: str, subset="train", batch_size=10, validation_
     - batch_size: Number of samples per batch
     """
     
+    spatial_crop_size = (64, 96, 96)  # crop region
+    target_size = (64, 96, 96)        # final uniform size
+    
     transforms = Compose([
         LoadImaged(keys=["image", "label"]),
         EnsureChannelFirstd(keys=["image", "label"]),
         NormalizeIntensityd(keys=["image"], nonzero=True, channel_wise=True),
-        ResizeWithPadOrCropd(keys=["image", "label"], spatial_size=(64, 96, 96)),
-        # Apply one-hot encoding
+
+        # Ensure that sampled patches contain tumor
+        RandCropByLabelClassesd(
+            keys=["image", "label"],
+            label_key="label",
+            spatial_size=spatial_crop_size,
+            num_classes=3,
+            num_samples=1,  # per image
+            ratios=[0.1, 0.7, 0.2],
+            allow_smaller = True
+        ),
+        ResizeWithPadOrCropd(keys=["image", "label"], spatial_size=target_size),
         AsDiscreted(keys=["label"], to_onehot=3),
         ToTensord(keys=["image", "label"]),
     ])
-
-
+        
     # Path to train or test directory
     subset_dir = os.path.join(data_dir, subset)
     patient_folders = sorted(os.listdir(subset_dir))
@@ -74,11 +88,19 @@ def get_mri_dataloader(data_dir: str, subset="train", batch_size=10, validation_
         full_image_path = os.path.join(preRT_path, image_file)
         full_mask_path = os.path.join(preRT_path, mask_file)
         
+        label_data = nib.load(full_mask_path).get_fdata()
+        unique = np.unique(label_data)
+
+        if not np.any(np.isin(unique, [1, 2])):
+            print(f"Skipping {patient_id} — no class 1 or 2 present.")
+            continue
+            
         data_list.append({
             "image": full_image_path,
             "label": full_mask_path
         })
-            
+
+    
     #Use dictionary-based Dataset
     dataset = Dataset(data=data_list, transform=transforms)
     
@@ -89,17 +111,11 @@ def get_mri_dataloader(data_dir: str, subset="train", batch_size=10, validation_
 
     train_indices, val_indices = indices[split_idx:], indices[:split_idx]
 
-    train_loader = DataLoader(dataset, batch_size=batch_size, sampler=torch.utils.data.SubsetRandomSampler(train_indices), drop_last=False)
-    val_loader = DataLoader(dataset, batch_size=batch_size, sampler=torch.utils.data.SubsetRandomSampler(val_indices), drop_last=False)
-    
-    batch = next(iter(train_loader))
-    label = batch["label"]  # Shape should be (B, 3, D, H, W)
-    print(f"Label shape: {label.shape}") 
-    print(f"Unique values in each class channel: {[torch.unique(label[:, i, :, :, :]) for i in range(3)]}")
+    #train_loader = DataLoader(dataset, batch_size=batch_size, sampler=torch.utils.data.SubsetRandomSampler(train_indices), drop_last=False, collate_fn=pad_list_data_collate)
+    #val_loader = DataLoader(dataset, batch_size=batch_size, sampler=torch.utils.data.SubsetRandomSampler(val_indices), drop_last=False, collate_fn=pad_list_data_collate)
 
-
-    #train_loader = get_subset_dataloader(dataset, train_indices, fraction=0.5, batch_size=4)
-    #val_loader = get_subset_dataloader(dataset, val_indices, fraction=0.5, batch_size=4)
+    train_loader = get_subset_dataloader(dataset, train_indices, fraction=0.5, batch_size=4)
+    val_loader = get_subset_dataloader(dataset, val_indices, fraction=0.5, batch_size=4)
     
     return train_loader, val_loader
 
