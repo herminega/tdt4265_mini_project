@@ -58,8 +58,8 @@ def get_mri_dataloader(data_dir: str, subset="train", batch_size=10, validation_
             label_key="label",
             spatial_size=spatial_crop_size,
             num_classes=3,
-            num_samples=1,  # per image
-            ratios=[0.1, 0.7, 0.2],
+            num_samples=3,  # per image
+            ratios=[0.05, 0.45, 0.5],
             allow_smaller = True
         ),
         ResizeWithPadOrCropd(keys=["image", "label"], spatial_size=target_size),
@@ -87,20 +87,12 @@ def get_mri_dataloader(data_dir: str, subset="train", batch_size=10, validation_
 
         full_image_path = os.path.join(preRT_path, image_file)
         full_mask_path = os.path.join(preRT_path, mask_file)
-        
-        label_data = nib.load(full_mask_path).get_fdata()
-        unique = np.unique(label_data)
-
-        if not np.any(np.isin(unique, [1, 2])):
-            print(f"Skipping {patient_id} — no class 1 or 2 present.")
-            continue
-            
+                    
         data_list.append({
             "image": full_image_path,
             "label": full_mask_path
         })
 
-    
     #Use dictionary-based Dataset
     dataset = Dataset(data=data_list, transform=transforms)
     

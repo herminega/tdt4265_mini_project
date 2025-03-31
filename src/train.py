@@ -117,9 +117,8 @@ class Trainer:
                 
                 pred = torch.argmax(softmax_outputs, dim=1)
                 true = labels.argmax(dim=1)
-                #labels.shape
-                print(f"Pred shape: {pred.shape}, True shape: {true.shape}")
-
+                
+                # Calculate TP, FP, FN for each class
                 for cls in [1, 2]:
                     TP = ((pred == cls) & (true == cls)).sum().item()
                     FP = ((pred == cls) & (true != cls)).sum().item()
@@ -262,7 +261,7 @@ if __name__ == "__main__":
         batch_size=3,
         learning_rate=5e-4,
         early_stop_count=5,
-        epochs=10,
+        epochs=30,
         in_channels=1,
         out_channels=3,
     )
@@ -272,7 +271,7 @@ if __name__ == "__main__":
 
     # Save the final model
     
-    model_name = f"swin_{datetime.datetime.now().strftime('%Y-%m-%d_%H-%M')}.pth"
+    model_name = f"dynunet_{datetime.datetime.now().strftime('%Y-%m-%d_%H-%M')}.pth"
     trainer.save_model(f"results/models/{model_name}")
    
 
