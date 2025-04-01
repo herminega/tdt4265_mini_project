@@ -29,13 +29,13 @@ def save_checkpoint(self):
 
         print(f"Model checkpoint saved at step {self.global_step}")
 
-def save_model(self, path="results/final_model.pth"):
+def save_model(model, path="results/final_model.pth"):
     """
     Saves the final trained model separately from checkpoints.
     Use this to save a model after training is complete.
     """
     pathlib.Path(path).parent.mkdir(parents=True, exist_ok=True)
-    torch.save(self.model.state_dict(), path)
+    torch.save(model.state_dict(), path)
     print(f"Final model saved at {path}")
     
 def save_nifti(tensor, filename):
@@ -43,17 +43,14 @@ def save_nifti(tensor, filename):
         img = nib.Nifti1Image(tensor, affine=np.eye(4))
         nib.save(img, filename)
     
-def save_predictions(self, input_tensor, label_tensor, output_tensor, meta_dict, index, output_dir):
-    pred = torch.argmax(output_tensor, dim=0).cpu().numpy().astype(np.uint8)
-    label = torch.argmax(label_tensor, dim=0).cpu().numpy().astype(np.uint8)
+def save_predictions(input_tensor, label_tensor, output_tensor, index, output_dir):
+    label_discrete = torch.argmax(label_tensor, dim=0)
+    prediction_discrete = torch.argmax(output_tensor, dim=0)
+    
+    save_nifti(input_tensor, f"{output_dir}/image_{index}.nii.gz")
+    save_nifti(label_discrete, f"{output_dir}/label_{index}.nii.gz")
+    save_nifti(prediction_discrete, f"{output_dir}/prediction_{index}.nii.gz")
 
-    pred_img = nib.Nifti1Image(pred, affine=meta_dict["affine"])
-    label_img = nib.Nifti1Image(label, affine=meta_dict["affine"])
-    input_img = nib.Nifti1Image(input_tensor.cpu().numpy().squeeze(), affine=meta_dict["affine"])
-
-    nib.save(pred_img, os.path.join(output_dir, f"prediction_{index}.nii.gz"))
-    nib.save(label_img, os.path.join(output_dir, f"label_{index}.nii.gz"))
-    nib.save(input_img, os.path.join(output_dir, f"image_{index}.nii.gz"))
     
 def log_metrics(epoch, train_metrics, val_metrics):
     print(f"\nEpoch {epoch} Summary:")

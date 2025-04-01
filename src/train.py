@@ -24,12 +24,14 @@ class Trainer:
         self.train_loader, self.val_loader = get_mri_dataloader(data_dir, "train", batch_size, validation_fraction=0.1)
 
         class_weights = torch.tensor([0.5, 1.0, 1.2]).to(self.device)
-        self.loss_criterion = DiceCELoss(to_onehot_y=False, softmax=True, lambda_dice=0.9, lambda_ce=0.1)
+        self.loss_criterion = DiceCELoss(to_onehot_y=False, softmax=True, lambda_dice=0.8, lambda_ce=0.2, class_weights=class_weights)
         self.dice_loss = DiceLoss(softmax=True)
         self.ce_loss = torch.nn.CrossEntropyLoss(weight=class_weights)
 
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=learning_rate, weight_decay=1e-5)
-        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=epochs)
+        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, mode='min', factor=0.5, patience=3, verbose=True, min_lr=1e-6)
+        # torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(self.optimizer, T_0=10, T_mult=2)
+        # torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=epochs)
 
         self.scaler = GradScaler()
         self.epochs = epochs
@@ -98,8 +100,7 @@ class Trainer:
                     total_FN[cls] += FN
 
                 if save and idx < 5:
-                    meta_dict = batch["image_meta_dict"]
-                    save_predictions(inputs[0], labels[0], softmax_outputs[0], meta_dict, idx, output_dir)
+                    save_predictions(inputs[0], labels[0], softmax_outputs[0], idx, output_dir)
 
         print(f"[Summary] Skipped {num_skipped}/{num_total + num_skipped} validation batches (no tumor present)")
 
@@ -202,7 +203,16 @@ class Trainer:
             }
 
             val_metrics = self.validate()
-            self.scheduler.step()
+            #self.scheduler.step()
+            #val_metrics = self.validate()
+
+            # Update ReduceLROnPlateau with validation loss
+            self.scheduler.step(val_metrics["loss"])  # Instead of self.scheduler.step()
+
+            # Optional: print current LR
+            for param_group in self.optimizer.param_groups:
+                print(f"Current LR: {param_group['lr']:.6f}")
+            
             save_checkpoint(self)
             log_metrics(epoch, train_metrics, val_metrics)
 

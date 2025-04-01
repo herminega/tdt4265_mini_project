@@ -51,11 +51,7 @@ def get_mri_dataloader(data_dir: str, subset="train", batch_size=2, validation_f
     target_size = (64, 96, 96)        # final uniform size
     
     transforms = Compose([
-        LoadImaged(
-            keys=["image", "label"],
-            meta_keys=["image_meta_dict", "label_meta_dict"],
-            image_only=False  # <--- This is key!
-        ),
+        LoadImaged(keys=["image", "label"]),
         
         EnsureChannelFirstd(keys=["image", "label"]),
         NormalizeIntensityd(keys=["image"], nonzero=True, channel_wise=True),
@@ -73,7 +69,7 @@ def get_mri_dataloader(data_dir: str, subset="train", batch_size=2, validation_f
         ResizeWithPadOrCropd(keys=["image", "label"], spatial_size=target_size),
         AsDiscreted(keys=["label"], to_onehot=3),
         ToTensord(keys=["image", "label"]),
-        EnsureTyped(keys=["image", "label"], track_meta=True),
+ 
     ])
         
     # Path to train or test directory
@@ -115,11 +111,11 @@ def get_mri_dataloader(data_dir: str, subset="train", batch_size=2, validation_f
 
     train_indices, val_indices = indices[split_idx:], indices[:split_idx]
 
-    #train_loader = DataLoader(dataset, batch_size=batch_size, sampler=torch.utils.data.SubsetRandomSampler(train_indices), drop_last=False, collate_fn=pad_list_data_collate)
-    #val_loader = DataLoader(dataset, batch_size=batch_size, sampler=torch.utils.data.SubsetRandomSampler(val_indices), drop_last=False, collate_fn=pad_list_data_collate)
+    train_loader = DataLoader(dataset, batch_size=batch_size, sampler=torch.utils.data.SubsetRandomSampler(train_indices), drop_last=False, collate_fn=pad_list_data_collate)
+    val_loader = DataLoader(dataset, batch_size=batch_size, sampler=torch.utils.data.SubsetRandomSampler(val_indices), drop_last=False, collate_fn=pad_list_data_collate)
 
-    train_loader = get_subset_dataloader(dataset, train_indices, fraction=0.5, batch_size=2)
-    val_loader = get_subset_dataloader(dataset, val_indices, fraction=0.5, batch_size=2)
+    #train_loader = get_subset_dataloader(dataset, train_indices, fraction=0.5, batch_size=2)
+    #val_loader = get_subset_dataloader(dataset, val_indices, fraction=0.5, batch_size=2)
     
     return train_loader, val_loader
 

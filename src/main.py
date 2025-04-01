@@ -19,7 +19,8 @@ if __name__ == "__main__":
 
     # Train the model
     trainer.train()
+    model = trainer.model
 
     # Save the final model
     model_name = f"dynunet_{datetime.datetime.now().strftime('%Y-%m-%d_%H-%M')}.pth"
-    save_model(f"results/models/{model_name}")
+    save_model(model, f"results/models/{model_name}")
