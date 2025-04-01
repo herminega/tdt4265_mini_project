@@ -16,10 +16,12 @@ from monai.transforms import (
     AdjustContrastd,
     EnsureTyped,
     RandCropByLabelClassesd,
+    RandCropByPosNegLabeld,
+    CropForegroundd,
     ToTensord,
     Compose,
 )
-from monai.data import Dataset, DataLoader, pad_list_data_collate
+from monai.data import Dataset, DataLoader, pad_list_data_collate, CacheDataset
 import nibabel as nib
 from torch.utils.data import Subset
 import numpy as np
@@ -37,18 +39,24 @@ def get_subset_dataloader(dataset, indices, fraction=0.5, batch_size=2):
     return DataLoader(subset, batch_size=batch_size, shuffle=True, drop_last=False)
 
 
-def get_mri_dataloader(data_dir: str, subset="train", batch_size=10, validation_fraction=0.1):
+def get_mri_dataloader(data_dir: str, subset="train", batch_size=2, validation_fraction=0.1):
     """
     Loads MRI dataset using MONAI, ensuring correct pairing of images & masks.
     - subset: "train" or "test"
     - batch_size: Number of samples per batch
     """
+
     
     spatial_crop_size = (64, 96, 96)  # crop region
     target_size = (64, 96, 96)        # final uniform size
     
     transforms = Compose([
-        LoadImaged(keys=["image", "label"]),
+        LoadImaged(
+            keys=["image", "label"],
+            meta_keys=["image_meta_dict", "label_meta_dict"],
+            image_only=False  # <--- This is key!
+        ),
+        
         EnsureChannelFirstd(keys=["image", "label"]),
         NormalizeIntensityd(keys=["image"], nonzero=True, channel_wise=True),
 
@@ -58,13 +66,14 @@ def get_mri_dataloader(data_dir: str, subset="train", batch_size=10, validation_
             label_key="label",
             spatial_size=spatial_crop_size,
             num_classes=3,
-            num_samples=3,  # per image
-            ratios=[0.05, 0.45, 0.5],
+            num_samples=6,  # per image
+            ratios=[0.4, 0.3, 0.3],
             allow_smaller = True
         ),
         ResizeWithPadOrCropd(keys=["image", "label"], spatial_size=target_size),
         AsDiscreted(keys=["label"], to_onehot=3),
         ToTensord(keys=["image", "label"]),
+        EnsureTyped(keys=["image", "label"], track_meta=True),
     ])
         
     # Path to train or test directory
@@ -94,7 +103,10 @@ def get_mri_dataloader(data_dir: str, subset="train", batch_size=10, validation_
         })
 
     #Use dictionary-based Dataset
-    dataset = Dataset(data=data_list, transform=transforms)
+    #dataset = Dataset(data=data_list, transform=transforms)
+    
+    dataset = CacheDataset(data=data_list, transform=transforms, cache_rate=1.0, num_workers=4)
+
     
     # Split into training & validation sets
     num_samples = len(dataset)
@@ -106,8 +118,8 @@ def get_mri_dataloader(data_dir: str, subset="train", batch_size=10, validation_
     #train_loader = DataLoader(dataset, batch_size=batch_size, sampler=torch.utils.data.SubsetRandomSampler(train_indices), drop_last=False, collate_fn=pad_list_data_collate)
     #val_loader = DataLoader(dataset, batch_size=batch_size, sampler=torch.utils.data.SubsetRandomSampler(val_indices), drop_last=False, collate_fn=pad_list_data_collate)
 
-    train_loader = get_subset_dataloader(dataset, train_indices, fraction=0.5, batch_size=4)
-    val_loader = get_subset_dataloader(dataset, val_indices, fraction=0.5, batch_size=4)
+    train_loader = get_subset_dataloader(dataset, train_indices, fraction=0.5, batch_size=2)
+    val_loader = get_subset_dataloader(dataset, val_indices, fraction=0.5, batch_size=2)
     
     return train_loader, val_loader
 

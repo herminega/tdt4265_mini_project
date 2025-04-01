@@ -1,6 +1,6 @@
 import torch.nn as nn
 from monai.networks.blocks import UnetOutBlock
-from monai.networks.nets import UNet, DynUNet, SwinUNETR as SwinUNETRModel
+from monai.networks.nets import UNet, DynUNet, SwinUNETR as SwinUNETRModel, UNet as NNUNet
 from monai.bundle import download, load
 
 """
@@ -43,12 +43,12 @@ class UNet3D(UNet):
             spatial_dims=3,  # 3D input
             in_channels=in_channels,  # Number of channels in MRI (1 for grayscale)
             out_channels=out_channels,  # Binary segmentation (1 output)
-            channels=(16, 32, 64, 128, 256),  # Number of filters in each layer
+            channels=(32, 64, 128, 256, 512),  # Number of channels in each layer
             strides=(2, 2, 2, 2),  # Strides for downsampling
             num_res_units=2,  # Number of residual units
             dropout=0.3  # Prevents overfitting 
         )
-        
+
 class DynUNet(DynUNet):
     def __init__(self, in_channels, out_channels):
         super().__init__(
@@ -62,6 +62,19 @@ class DynUNet(DynUNet):
             deep_supervision=False  # Enable deep supervision
         ) 
 
+class NNUNet(NNUNet):
+    def __init__(self, in_channels, out_channels):
+        super().__init__(
+            spatial_dims=3,
+            in_channels=in_channels,
+            out_channels=out_channels,
+            channels=(32, 64, 128, 256, 320),
+            strides=(2, 2, 2, 2),
+            num_res_units=2,
+            norm="INSTANCE",
+            dropout=0.3,
+        )        
+   
 class SwinUNETR(SwinUNETRModel):
     def __init__(self, in_channels, out_channels):
         super().__init__(
@@ -77,6 +90,9 @@ def get_model(model_type="unet", in_channels=1, out_channels=3, pretrained=False
 
     elif model_type.lower() == "dynunet":
         return DynUNet(in_channels=in_channels, out_channels=out_channels)
+    
+    elif model_type.lower() == "nnunet":
+        return NNUNet(in_channels=in_channels, out_channels=out_channels)
 
     elif model_type.lower() == "swinunetr":
         if pretrained:
@@ -85,3 +101,5 @@ def get_model(model_type="unet", in_channels=1, out_channels=3, pretrained=False
 
     else:
         raise ValueError(f"Invalid model type '{model_type}'. Choose from ['unet', 'dynunet', 'swinunetr'].")
+    
+    

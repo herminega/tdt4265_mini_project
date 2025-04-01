@@ -208,3 +208,48 @@ if __name__ == "__main__":
 
     # Run training for 4 epochs
     trainer.train(epochs=4)
+
+
+
+
+        ### Loss functions options ###
+        class_weights = torch.tensor([0.1, 1.5, 1.0]).to(self.device)
+        # 1. (Generalized Dice Loss with softmax)
+        #self.loss_criterion = GeneralizedDiceLoss(softmax=True, include_background=True) 
+        # 2. Class weights for handling imbalance
+        #self.loss_criterion = DiceLoss(
+        #    softmax=True, 
+        #    weight=class_weights)
+        # 3. Combined Dice + Cross-Entropy Loss
+        self.loss_criterion = DiceCELoss(to_onehot_y=False, softmax=True, lambda_dice=0.7, lambda_ce=0.3, weight=class_weights)
+        # 4. Focal loss [did not work well]
+        #self.loss_criterion = FocalLoss(
+        #    include_background=True,
+        #    to_onehot_y=False,  # already using onehot labels in transform
+        #    gamma=2.0,
+        #    weight=class_weights,  # optional
+        #    reduction = "mean"
+        #)
+        # 5. Combined Dice + Focal Loss
+        #self.loss_criterion = DiceFocalLoss(
+        #    to_onehot_y=False,
+        #    softmax=True,
+        #    gamma=1.0, 
+        #    lambda_dice = 0.8,
+        #    lambda_focal = 0.2,
+            #weight=class_weights,  # optional
+        #    reduction = "mean"
+        #)
+        
+
+        # Option 1: Just CE with smoothing
+        #self.loss_criterion = LabelSmoothingCrossEntropyLoss(smoothing=0.1)
+
+        # Option 2: Combine it with Dice
+        #dice = DiceLoss(softmax=True)
+        #ce = LabelSmoothingCrossEntropyLoss(smoothing=0.1)
+
+        #def combined_loss(pred, target):
+        #    return 0.6 * dice(pred, target) + 0.4 * ce(pred, target)
+
+        #self.loss_criterion = combined_loss
