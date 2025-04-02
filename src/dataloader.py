@@ -46,31 +46,28 @@ def get_mri_dataloader(data_dir: str, subset="train", batch_size=2, validation_f
     - batch_size: Number of samples per batch
     """
 
-    
+    # Define the transforms for the dataset
     spatial_crop_size = (64, 96, 96)  # crop region
     target_size = (64, 96, 96)        # final uniform size
-    
+
     transforms = Compose([
         LoadImaged(keys=["image", "label"]),
-        
         EnsureChannelFirstd(keys=["image", "label"]),
         NormalizeIntensityd(keys=["image"], nonzero=True, channel_wise=True),
 
-        # Ensure that sampled patches contain tumor
-        RandCropByLabelClassesd(
+        # Using RandCropByPosNegLabeld to enforce a ratio of tumor patches.
+        RandCropByPosNegLabeld(
             keys=["image", "label"],
             label_key="label",
             spatial_size=spatial_crop_size,
-            num_classes=3,
-            num_samples=6,  # per image
-            ratios=[0.4, 0.3, 0.3],
-            allow_smaller = True
+            num_samples=6,      # per image
+            pos_ratio=0.5,      # aim for 50% of crops to contain tumor regions
+            allow_smaller=True
         ),
         ResizeWithPadOrCropd(keys=["image", "label"], spatial_size=target_size),
-        AsDiscreted(keys=["label"], to_onehot=3),
         ToTensord(keys=["image", "label"]),
- 
     ])
+
         
     # Path to train or test directory
     subset_dir = os.path.join(data_dir, subset)

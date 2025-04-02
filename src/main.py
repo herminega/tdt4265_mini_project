@@ -11,8 +11,8 @@ if __name__ == "__main__":
         data_dir=data_dir,
         batch_size=4,
         learning_rate=1e-3,
-        early_stop_count=5,
-        epochs=50,
+        early_stop_count=10,
+        epochs=60,
         in_channels=1,
         out_channels=3,
     )

@@ -24,8 +24,8 @@ class Trainer:
         self.train_loader, self.val_loader = get_mri_dataloader(data_dir, "train", batch_size, validation_fraction=0.1)
 
         class_weights = torch.tensor([0.5, 1.0, 1.2]).to(self.device)
-        self.loss_criterion = DiceCELoss(to_onehot_y=False, softmax=True, lambda_dice=0.8, lambda_ce=0.2, class_weights=class_weights)
-        self.dice_loss = DiceLoss(softmax=True)
+        self.loss_criterion = DiceCELoss(to_onehot_y=True, softmax=True, lambda_dice=0.8, lambda_ce=0.2, weight=class_weights)
+        self.dice_loss = DiceLoss(to_onehot_y=True, softmax=True)
         self.ce_loss = torch.nn.CrossEntropyLoss(weight=class_weights)
 
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=learning_rate, weight_decay=1e-5)
@@ -53,8 +53,9 @@ class Trainer:
             loss = self.loss_criterion(outputs, labels)
             
             # Compute individual components for logging/monitoring (not used in training step)
-            ce = self.ce_loss(outputs, labels.argmax(dim=1))
+            ce = self.ce_loss(outputs, labels.squeeze(1).long())
             dice = self.dice_loss(outputs, labels)
+
             
         self.scaler.scale(loss).backward()
         self.scaler.step(self.optimizer)
@@ -83,7 +84,7 @@ class Trainer:
                 self.dice_metric(softmax_outputs, labels)
 
                 pred = torch.argmax(softmax_outputs, dim=1)
-                true = labels.argmax(dim=1)
+                true = labels.squeeze(1)
 
                 if true.sum() == 0:
                     print(f"[Skip] Sample {idx} has no tumor in ground truth.")
@@ -164,7 +165,7 @@ class Trainer:
                 progress_bar.set_postfix(loss=f"{loss:.4f}", ce_loss=f"{ce_loss_val:.4f}", dice_loss=f"{dice_loss_val:.4f}")
 
                 pred = torch.argmax(softmax_outputs, dim=1)
-                true = targets.argmax(dim=1)
+                true = targets.squeeze(1)
                 
                 for cls in [1, 2]:
                     TP = ((pred == cls) & (true == cls)).sum().item()
