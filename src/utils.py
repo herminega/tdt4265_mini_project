@@ -3,6 +3,9 @@ import os
 import pathlib
 import numpy as np
 import nibabel as nib
+import time
+import datetime
+import yaml
 
 def should_early_stop(self):
         val_loss = self.validation_history["loss"]
@@ -13,30 +16,53 @@ def should_early_stop(self):
 
 
 def save_checkpoint(self):
-        """
-        Saves model checkpoint. This is useful to resume training from a saved state.
-        """
-        best_model = self.validation_history["loss"][self.global_step] == min(self.validation_history["loss"].values())
-        state_dict = self.model.state_dict()
-        filepath = self.checkpoint_dir.joinpath(f"{self.global_step}.ckpt")
-
-        # Ensure checkpoint directory exists
-        self.checkpoint_dir.mkdir(exist_ok=True, parents=True)
-
-        torch.save(state_dict, filepath)
-        if best_model:
-            torch.save(state_dict, self.checkpoint_dir.joinpath("best.ckpt"))
-
-        print(f"Model checkpoint saved at step {self.global_step}")
-
-def save_model(model, path="results/final_model.pth"):
     """
-    Saves the final trained model separately from checkpoints.
-    Use this to save a model after training is complete.
+    Save a checkpoint with the model's and optimizer's state, as well as metadata.
     """
-    pathlib.Path(path).parent.mkdir(parents=True, exist_ok=True)
-    torch.save(model.state_dict(), path)
-    print(f"Final model saved at {path}")
+    state = {
+        "epoch": self.current_epoch,
+        "global_step": self.global_step,
+        "model_state": self.model.state_dict(),
+        "optimizer_state": self.optimizer.state_dict(),
+        "scheduler_state": self.scheduler.state_dict(),
+        "validation_history": self.validation_history,
+        "timestamp": time.strftime("%Y%m%d_%H%M%S")
+    }
+    config = {
+        "learning_rate": self.optimizer.param_groups[0]["lr"],
+        "batch_size": self.train_loader.batch_size,
+        "loss_parameters": {
+            "lambda_dice": self.loss_criterion.lambda_dice,
+            "lambda_ce": self.loss_criterion.lambda_ce,
+        },
+        "model": self.model.__class__.__name__,
+        "dataset": "HNTS-MRG Challenge 2024",
+    }
+    state["config"] = config
+
+    filename = f"checkpoint_{self.global_step:06d}_{state['timestamp']}.ckpt"
+    filepath = self.checkpoint_dir / filename
+    self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    torch.save(state, filepath)
+    print(f"Checkpoint saved at step {self.global_step} to {filepath}")
+
+    best_model = self.validation_history["loss"][self.global_step] == min(self.validation_history["loss"].values())
+    if best_model:
+        best_filepath = self.checkpoint_dir / "best.ckpt"
+        torch.save(state, best_filepath)
+        print(f"Best model updated at {best_filepath}")
+
+def save_model(model, model_dir, filename=None):
+    """
+    Saves the final model's state_dict in the specified model directory.
+    """
+    model_dir = pathlib.Path(model_dir)
+    model_dir.mkdir(parents=True, exist_ok=True)
+    if filename is None:
+        filename = f"dynunet_{datetime.datetime.now().strftime('%Y-%m-%d_%H-%M')}.pth"
+    model_path = model_dir / filename
+    torch.save(model.state_dict(), model_path)
+    print(f"Final model saved at {model_path}")
     
 def save_nifti(tensor, filename):
         tensor = tensor.cpu().numpy().squeeze().astype(np.uint8)
@@ -44,7 +70,14 @@ def save_nifti(tensor, filename):
         nib.save(img, filename)
     
 def save_predictions(input_tensor, label_tensor, output_tensor, index, output_dir):
-    label_discrete = torch.argmax(label_tensor, dim=0)
+    # If label_tensor has more than one channel, assume it's one-hot encoded and use argmax.
+    if label_tensor.shape[0] > 1:
+        label_discrete = torch.argmax(label_tensor, dim=0)
+    else:
+        # Otherwise, squeeze the channel dimension.
+        label_discrete = label_tensor.squeeze(0)
+    
+    # For predictions, since they are outputs from the network and one-hot encoded, use argmax.
     prediction_discrete = torch.argmax(output_tensor, dim=0)
     
     save_nifti(input_tensor, f"{output_dir}/image_{index}.nii.gz")

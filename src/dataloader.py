@@ -17,6 +17,7 @@ from monai.transforms import (
     EnsureTyped,
     RandCropByLabelClassesd,
     RandCropByPosNegLabeld,
+    Spacingd,
     CropForegroundd,
     ToTensord,
     Compose,
@@ -27,6 +28,11 @@ from torch.utils.data import Subset
 import numpy as np
 
 monai.utils.set_determinism(seed=42)
+
+from monai.transforms import MapTransform
+import numpy as np
+import torch
+
 
 def get_subset_dataloader(dataset, indices, fraction=0.5, batch_size=2):
     """
@@ -45,30 +51,38 @@ def get_mri_dataloader(data_dir: str, subset="train", batch_size=2, validation_f
     - subset: "train" or "test"
     - batch_size: Number of samples per batch
     """
-
-    # Define the transforms for the dataset
-    spatial_crop_size = (64, 96, 96)  # crop region
-    target_size = (64, 96, 96)        # final uniform size
-
+ 
     transforms = Compose([
+        # 1. Load the image and label files.
         LoadImaged(keys=["image", "label"]),
+        
+        # 2. Ensure channel-first ordering.
         EnsureChannelFirstd(keys=["image", "label"]),
+        
+        # 3. Crop the image to the foreground.
+        CropForegroundd(keys=["image", "label"], source_key="image", allow_smaller=True),
+        
+        # 4. Normalize the image intensity.
         NormalizeIntensityd(keys=["image"], nonzero=True, channel_wise=True),
-
-        # Using RandCropByPosNegLabeld to enforce a ratio of tumor patches.
-        RandCropByPosNegLabeld(
+        
+        # 5. Force sampling from specific label classes.
+        RandCropByLabelClassesd(
             keys=["image", "label"],
             label_key="label",
-            spatial_size=spatial_crop_size,
-            num_samples=6,      # per image
-            pos_ratio=0.5,      # aim for 50% of crops to contain tumor regions
+            spatial_size=(192, 192, 48),  # Patch size in voxels.
+            ratios=[0.1, 0.45, 0.45],     # Background, GTVp (class 1), and GTVn (class 2).
+            num_samples=3,     
+            num_classes=3,        
             allow_smaller=True
         ),
-        ResizeWithPadOrCropd(keys=["image", "label"], spatial_size=target_size),
+        
+        # 6. Resize or pad the crop to a fixed size.
+        ResizeWithPadOrCropd(keys=["image", "label"], spatial_size=(192, 192, 48)),
+        
+        # 7. Convert to tensors.
         ToTensord(keys=["image", "label"]),
     ])
-
-        
+     
     # Path to train or test directory
     subset_dir = os.path.join(data_dir, subset)
     patient_folders = sorted(os.listdir(subset_dir))
