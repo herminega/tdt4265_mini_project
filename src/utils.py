@@ -54,13 +54,13 @@ def save_checkpoint(model, optimizer, scheduler, validation_history, loss_criter
         torch.save(state, last_path)
         print(f"Last checkpoint saved to: {last_path}")
 
-    # Save "best" if current loss is best
-    best = validation_history["loss"][global_step] == min(validation_history["loss"].values())
+
+    # Save "best" if current mean_dice is best
+    best = validation_history["dice"][global_step] == max(validation_history["dice"].values())
     if best:
         best_path = checkpoint_dir / "best.ckpt"
         torch.save(state, best_path)
-        print(f"Best model updated at: {best_path}")
-
+        print(f"Best model updated at: {best_path} (based on highest mean Dice)")
 
 def save_model(model, model_dir, filename=None):
     """

@@ -38,10 +38,10 @@ class Trainer:
         self.model = get_model("nnunet", in_channels, out_channels, pretrained=False).to(self.device)
         self.train_loader, self.val_loader = get_mri_dataloader(data_dir, "train", batch_size, validation_fraction=0.1)
 
-        class_weights = torch.tensor([0.4, 1.5, 1.2]).to(self.device)
+        class_weights = torch.tensor([0.4, 1.5, 1.5]).to(self.device)
         self.loss_criterion = DiceCELoss(
-            to_onehot_y=True, softmax=True, smooth_dr=0.001,
-            weight=class_weights, lambda_dice=0.75, lambda_ce=0.35
+            to_onehot_y=True, softmax=True, smooth_dr=0.0001,
+            weight=class_weights, lambda_dice=0.7, lambda_ce=0.3
         )
 
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=learning_rate, weight_decay=5e-5)
@@ -65,7 +65,7 @@ class Trainer:
     def _init_scheduler(self, scheduler_type, epochs):
         if scheduler_type.lower() == "plateau":
             return torch.optim.lr_scheduler.ReduceLROnPlateau(
-                self.optimizer, mode='min', factor=0.5, patience=7, verbose=True, min_lr=1e-6
+                self.optimizer, mode='min', factor=0.5, patience=10, verbose=True, min_lr=1e-6
             )
         elif scheduler_type.lower() == "cosine":
             return torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=epochs)
@@ -119,11 +119,26 @@ class Trainer:
 
             metrics = self._finalize_epoch(epoch_loss, total_TP, total_FP, total_FN, self.train_history, loader_len=len(self.train_loader))
             val_metrics = self.validate()
-
+            
             if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
-                self.scheduler.step(val_metrics["loss"])
+                if epoch == 70:
+                    print("Switching to reduced-patience scheduler (patience=5)")
+                    self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                        self.optimizer, mode='min', factor=0.5, patience=7, verbose=True, min_lr=1e-6
+                    )
+                
+                if epoch == 120:
+                    print("Manual LR drop to 2e-5")
+                    for param_group in self.optimizer.param_groups:
+                        param_group['lr'] = 2e-5
+                    # Optional: Freeze scheduler after manual LR drop
+                    self.scheduler = None
+                    
+                if self.scheduler is not None:
+                    self.scheduler.step(val_metrics["loss"])
             else:
                 self.scheduler.step()
+
             
             for param_group in self.optimizer.param_groups:
                 print(f"Current LR: {param_group['lr']:.6f}")

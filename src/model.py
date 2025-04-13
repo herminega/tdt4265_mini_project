@@ -56,8 +56,8 @@ class UNet3D(UNet):
             out_channels=out_channels,  # Binary segmentation (1 output)
             channels=(32, 64, 128, 256, 400),  # Number of channels in each layer
             strides=(2, 2, 2, 2),  # Strides for downsampling
-            num_res_units=2,  # Number of residual units
-            dropout=0.3  # Prevents overfitting 
+            num_res_units=6,  # Number of residual units
+            dropout=0.4  # Prevents overfitting 
         )
 
 class DynUNet(DynUNet):
@@ -85,7 +85,7 @@ class NNUNet(NNUNet):
             strides=(2, 2, 2, 2, 2),
             num_res_units=2,
             norm="INSTANCE",
-            dropout=0.4,
+            dropout=0.3,
         )        
    
 def get_model(model_type="unet", in_channels=1, out_channels=3, pretrained=False):

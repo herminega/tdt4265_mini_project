@@ -83,14 +83,14 @@ def get_mri_dataloader(data_dir: str, subset="train", batch_size=2, validation_f
         
         # 7. Augmentations
         RandFlipd(keys=["image", "label"], prob=0.1, spatial_axis=[0, 1]),
-        #RandAffined(
-            #keys=["image", "label"],
-            #rotate_range=(0.05, 0.05, 0.05),
-            #scale_range=(0.05, 0.05, 0.05),
-            #prob=0.1,
-        #),
+        RandAffined(
+            keys=["image", "label"],
+            rotate_range=(0.1, 0.1, 0.1),
+            scale_range=(0.1, 0.1, 0.1),
+            prob=0.1,
+        ),
         RandGaussianNoised(keys=["image"], prob=0.1, mean=0.0, std=0.05),
-        #RandBiasFieldd(keys=["image"], prob=0.1),
+        #RandBiasFieldd(keys=["image"], prob=0.15),
 
         # 8. Convert to tensors.
         ToTensord(keys=["image", "label"]),

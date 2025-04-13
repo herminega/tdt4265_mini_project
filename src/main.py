@@ -6,7 +6,7 @@ from utils import save_model
 
 if __name__ == "__main__":
     # Define experiment-specific folder structure.
-    EXPERIMENT = "exp11_nnunet"
+    EXPERIMENT = "exp15_nnunet"
     BASE_SAVE_PATH = pathlib.Path("results") / EXPERIMENT
     CHECKPOINT_DIR = BASE_SAVE_PATH / "checkpoints"
     MODEL_DIR = BASE_SAVE_PATH / "models"
@@ -22,11 +22,11 @@ if __name__ == "__main__":
         "batch_size": 3,
         "learning_rate": 1e-3,
         "early_stop_count": 15,
-        "epochs": 60,
+        "epochs": 200,
         "model": "nnunet",
         "loss_parameters": {
-            "lambda_dice": 0.75,
-            "lambda_ce": 0.25
+            "lambda_dice": 0.7,
+            "lambda_ce": 0.3
         }
     }
     with open(BASE_SAVE_PATH / "config.yaml", 'w') as f:
@@ -40,7 +40,7 @@ if __name__ == "__main__":
         batch_size=3,
         learning_rate=1e-3,
         early_stop_count=15,
-        epochs=60,
+        epochs=200,
         checkpoint_dir=CHECKPOINT_DIR,  # pass the checkpoints folder
         in_channels=1,
         out_channels=3,
