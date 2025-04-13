@@ -23,14 +23,28 @@ def get_pretrained_bundle_model(bundle_name="brats_mri_segmentation", bundle_dir
     )
 
     print("Model loaded successfully.")
-    print("Replacing output head to match target classes...")
 
-    # Replace the final output layer (14 → your target classes)
-    model.out = UnetOutBlock(
-        spatial_dims=3,
-        in_channels=model.out.conv.in_channels,
-        out_channels=out_channels
+    # Fix input channels (BraTS model has 4 → yours is 1)
+    old_conv = model.convInit.conv
+    model.convInit.conv = nn.Conv3d(
+        in_channels=1,
+        out_channels=old_conv.out_channels,
+        kernel_size=old_conv.kernel_size,
+        stride=old_conv.stride,
+        padding=old_conv.padding,
+        bias=old_conv.bias is not None
     )
+    print("Replaced `convInit` to accept 1-channel input.")
+
+    # Fix output channels (BraTS has 3 classes → yours is 3 too, but just in case)
+    model.conv_final[2] = nn.Conv3d(
+        in_channels=model.conv_final[2].in_channels,
+        out_channels=out_channels,
+        kernel_size=1,
+        stride=1
+    )
+    print("Replaced final output layer to match", out_channels, "classes.")
+
     return model
 
 
@@ -40,7 +54,7 @@ class UNet3D(UNet):
             spatial_dims=3,  # 3D input
             in_channels=in_channels,  # Number of channels in MRI (1 for grayscale)
             out_channels=out_channels,  # Binary segmentation (1 output)
-            channels=(32, 64, 128, 256, 512),  # Number of channels in each layer
+            channels=(32, 64, 128, 256, 400),  # Number of channels in each layer
             strides=(2, 2, 2, 2),  # Strides for downsampling
             num_res_units=2,  # Number of residual units
             dropout=0.3  # Prevents overfitting 
@@ -68,10 +82,10 @@ class NNUNet(NNUNet):
             in_channels=in_channels,
             out_channels=out_channels,
             channels=(32, 64, 128, 256, 320),
-            strides=(2, 2, 2, 2),
+            strides=(2, 2, 2, 2, 2),
             num_res_units=2,
             norm="INSTANCE",
-            dropout=0.3,
+            dropout=0.4,
         )        
    
 def get_model(model_type="unet", in_channels=1, out_channels=3, pretrained=False):
@@ -96,6 +110,8 @@ def get_model(model_type="unet", in_channels=1, out_channels=3, pretrained=False
                 in_channels=in_channels,
                 out_channels=out_channels,
                 init_features=32,  # you might adjust this based on memory or expected capacity
+                dropout_prob=0.4,  # Dropout to prevent overfitting
+                norm_name="instance",  # Normalization layer
             )
 
     else:

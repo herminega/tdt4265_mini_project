@@ -6,7 +6,7 @@ from utils import save_model
 
 if __name__ == "__main__":
     # Define experiment-specific folder structure.
-    EXPERIMENT = "exp03_DynUNet"
+    EXPERIMENT = "exp11_nnunet"
     BASE_SAVE_PATH = pathlib.Path("results") / EXPERIMENT
     CHECKPOINT_DIR = BASE_SAVE_PATH / "checkpoints"
     MODEL_DIR = BASE_SAVE_PATH / "models"
@@ -18,7 +18,7 @@ if __name__ == "__main__":
     # Save experiment configuration:
     config = {
         "experiment": EXPERIMENT,
-        "data_dir": "/cluster/projects/vc/data/mic/open/HNTS-MRG",
+        "data_dir": "/datasets/tdt4265/mic/open/HNTS-MRG",
         "batch_size": 3,
         "learning_rate": 1e-3,
         "early_stop_count": 15,
@@ -26,18 +26,20 @@ if __name__ == "__main__":
         "model": "nnunet",
         "loss_parameters": {
             "lambda_dice": 0.75,
-            "lambda_ce": 0.35
+            "lambda_ce": 0.25
         }
     }
     with open(BASE_SAVE_PATH / "config.yaml", 'w') as f:
         yaml.dump(config, f)
 
     # Initialize Trainer; note that we pass the checkpoint_dir.
+    # Path idun: /cluster/projects/vc/data/mic/open/HNTS-MRG
+    # Path cybele: /datasets/tdt4265/mic/open/HNTS-MRG
     trainer = Trainer(
-        data_dir="/cluster/projects/vc/data/mic/open/HNTS-MRG",
+        data_dir="/datasets/tdt4265/mic/open/HNTS-MRG",
         batch_size=3,
         learning_rate=1e-3,
-        early_stop_count=10,
+        early_stop_count=15,
         epochs=60,
         checkpoint_dir=CHECKPOINT_DIR,  # pass the checkpoints folder
         in_channels=1,

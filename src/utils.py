@@ -6,6 +6,7 @@ import nibabel as nib
 import time
 import datetime
 import yaml
+import json
 
 def should_early_stop(self, delta=1e-4):
     val_loss = self.validation_history["loss"]
@@ -16,42 +17,50 @@ def should_early_stop(self, delta=1e-4):
     return (min(recent) + delta) >= recent[0]
 
 
-def save_checkpoint(self):
+def save_checkpoint(model, optimizer, scheduler, validation_history, loss_criterion,
+                    train_loader, epoch, global_step, total_epochs, checkpoint_dir):
     """
-    Save a checkpoint with the model's and optimizer's state, as well as metadata.
+    Save a model checkpoint, including metadata and best/last logic.
     """
+    import time
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
     state = {
-        "epoch": self.current_epoch,
-        "global_step": self.global_step,
-        "model_state": self.model.state_dict(),
-        "optimizer_state": self.optimizer.state_dict(),
-        "scheduler_state": self.scheduler.state_dict(),
-        "validation_history": self.validation_history,
+        "epoch": epoch,
+        "global_step": global_step,
+        "model_state": model.state_dict(),
+        "optimizer_state": optimizer.state_dict(),
+        "scheduler_state": scheduler.state_dict(),
+        "validation_history": validation_history,
         "timestamp": time.strftime("%Y%m%d_%H%M%S")
     }
+
     config = {
-        "learning_rate": self.optimizer.param_groups[0]["lr"],
-        "batch_size": self.train_loader.batch_size,
+        "learning_rate": optimizer.param_groups[0]["lr"],
+        "batch_size": train_loader.batch_size,
         "loss_parameters": {
-            "lambda_dice": self.loss_criterion.lambda_dice,
-            "lambda_ce": self.loss_criterion.lambda_ce,
+            "lambda_dice": loss_criterion.lambda_dice,
+            "lambda_ce": loss_criterion.lambda_ce,
         },
-        "model": self.model.__class__.__name__,
+        "model": model.__class__.__name__,
         "dataset": "HNTS-MRG Challenge 2024",
     }
+
     state["config"] = config
 
-    filename = f"checkpoint_{self.global_step:06d}_{state['timestamp']}.ckpt"
-    filepath = self.checkpoint_dir / filename
-    self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    torch.save(state, filepath)
-    print(f"Checkpoint saved at step {self.global_step} to {filepath}")
+    # Save "last" checkpoint every N or final epoch
+    if epoch % 5 == 0 or epoch == total_epochs:
+        last_path = checkpoint_dir / "last.ckpt"
+        torch.save(state, last_path)
+        print(f"Last checkpoint saved to: {last_path}")
 
-    best_model = self.validation_history["loss"][self.global_step] == min(self.validation_history["loss"].values())
-    if best_model:
-        best_filepath = self.checkpoint_dir / "best.ckpt"
-        torch.save(state, best_filepath)
-        print(f"Best model updated at {best_filepath}")
+    # Save "best" if current loss is best
+    best = validation_history["loss"][global_step] == min(validation_history["loss"].values())
+    if best:
+        best_path = checkpoint_dir / "best.ckpt"
+        torch.save(state, best_path)
+        print(f"Best model updated at: {best_path}")
+
 
 def save_model(model, model_dir, filename=None):
     """
@@ -60,7 +69,7 @@ def save_model(model, model_dir, filename=None):
     model_dir = pathlib.Path(model_dir)
     model_dir.mkdir(parents=True, exist_ok=True)
     if filename is None:
-        filename = f"dynunet_{datetime.datetime.now().strftime('%Y-%m-%d_%H-%M')}.pth"
+        filename = f"{datetime.datetime.now().strftime('%Y-%m-%d_%H-%M')}.pth"
     model_path = model_dir / filename
     torch.save(model.state_dict(), model_path)
     print(f"Final model saved at {model_path}")
@@ -105,7 +114,33 @@ def log_metrics(epoch, train_metrics, val_metrics):
     print(f"  Class 2 : Precision {val_metrics['precision_class2']:.4f} / Recall {val_metrics['recall_class2']:.4f}")
 
 
-def freeze_encoder(self, freeze=True):
-    for name, param in self.model.named_parameters():
-        if "down" in name:
+def freeze_encoder(model, freeze=True):
+    for name, param in model.named_parameters():
+        if "down" in name:  # or 'encoder' for other nets
             param.requires_grad = not freeze
+
+def is_best_model(global_step, validation_history):
+    """
+    Determines if the model at the given global step is the best so far,
+    based on the lowest validation loss.
+    """
+    current_loss = validation_history["loss"][global_step]
+    return current_loss == min(validation_history["loss"].values())
+
+def save_history_log(train_history, val_history, path):
+    def to_serializable(obj):
+        if isinstance(obj, dict):
+            return {k: to_serializable(v) for k, v in obj.items()}
+        elif isinstance(obj, (np.float32, np.float64)):
+            return float(obj)
+        elif isinstance(obj, (np.int32, np.int64)):
+            return int(obj)
+        return obj
+
+    history = {
+        "train": to_serializable(train_history),
+        "validation": to_serializable(val_history),
+    }
+
+    with open(path, "w") as f:
+        json.dump(history, f, indent=4)
