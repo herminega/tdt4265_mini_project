@@ -7,12 +7,13 @@ import time
 import datetime
 import yaml
 
-def should_early_stop(self):
-        val_loss = self.validation_history["loss"]
-        if len(val_loss) < self.early_stop_count:
-            return False
-        recent = list(val_loss.values())[-self.early_stop_count:]
-        return recent[0] == min(recent)
+def should_early_stop(self, delta=1e-4):
+    val_loss = self.validation_history["loss"]
+    if len(val_loss) < self.early_stop_count:
+        return False
+    recent = list(val_loss.values())[-self.early_stop_count:]
+    # Stop if no epoch in the recent window lowered the validation loss by more than delta compared to the best value.
+    return (min(recent) + delta) >= recent[0]
 
 
 def save_checkpoint(self):

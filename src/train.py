@@ -18,7 +18,8 @@ from utils import (
 )
 
 class Trainer:
-    def __init__(self, data_dir, batch_size, learning_rate, early_stop_count, epochs, in_channels=1, out_channels=3, checkpoint_dir=None):
+    def __init__(self, data_dir, batch_size, learning_rate, early_stop_count, 
+                 epochs, in_channels=1, out_channels=3, checkpoint_dir=None, scheduler_type="plateau"):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print(f"Using device: {self.device}")
 
@@ -29,9 +30,19 @@ class Trainer:
         self.loss_criterion = DiceCELoss(to_onehot_y=True, softmax=True, smooth_dr= 0.001, lambda_dice=0.7, lambda_ce=0.3)
 
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=learning_rate, weight_decay=1e-5)
-        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, mode='min', factor=0.5, patience=8, verbose=True, min_lr=1e-6)
-        # torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(self.optimizer, T_0=10, T_mult=2)
-        # torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=epochs)
+        # Choose LR scheduler based on scheduler_type
+        if scheduler_type.lower() == "plateau":
+            self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                self.optimizer, mode='min', factor=0.5, patience=8, verbose=True, min_lr=1e-6
+            )
+        elif scheduler_type.lower() == "cosine":
+            # CosineAnnealingLR decays the learning rate gradually over T_max epochs.
+            self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                self.optimizer, T_max=epochs
+            )
+        else:
+            raise ValueError("Unsupported scheduler_type. Use 'plateau' or 'cosine'.")
+
 
         #self.scaler = GradScaler()
         self.epochs = epochs
@@ -222,7 +233,13 @@ class Trainer:
             }
 
             val_metrics = self.validate()
-            self.scheduler.step(val_metrics["loss"])  # Adjust learning rate based on validation loss.
+            
+            # Scheduler update: if using ReduceLROnPlateau, pass val loss; if cosine, call step() without argument.
+            if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                self.scheduler.step(val_metrics["loss"])
+            else:
+                self.scheduler.step()
+
 
             # Optional: print current learning rate.
             for param_group in self.optimizer.param_groups:

@@ -31,7 +31,6 @@ def get_pretrained_bundle_model(bundle_name="brats_mri_segmentation", bundle_dir
         in_channels=model.out.conv.in_channels,
         out_channels=out_channels
     )
-
     return model
 
 

@@ -19,13 +19,12 @@ if __name__ == "__main__":
     config = {
         "experiment": EXPERIMENT,
         "data_dir": "/cluster/projects/vc/data/mic/open/HNTS-MRG",
-        "batch_size": 2,
-        "learning_rate": 5e-4,
-        "early_stop_count": 10,
+        "batch_size": 3,
+        "learning_rate": 1e-3,
+        "early_stop_count": 15,
         "epochs": 60,
         "model": "nnunet",
         "loss_parameters": {
-            "smooth_dr": 0.001,
             "lambda_dice": 0.75,
             "lambda_ce": 0.35
         }
@@ -36,7 +35,7 @@ if __name__ == "__main__":
     # Initialize Trainer; note that we pass the checkpoint_dir.
     trainer = Trainer(
         data_dir="/cluster/projects/vc/data/mic/open/HNTS-MRG",
-        batch_size=4,
+        batch_size=3,
         learning_rate=1e-3,
         early_stop_count=10,
         epochs=60,
