@@ -1,5 +1,5 @@
 import torch
-import os
+import os, random
 import pathlib
 import numpy as np
 import nibabel as nib
@@ -7,6 +7,18 @@ import time
 import datetime
 import yaml
 import json
+
+
+def set_global_seed(seed: int = 0, deterministic: bool = True):
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    if deterministic:
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark     = False
+        torch.use_deterministic_algorithms(True, warn_only=True)
 
 def should_early_stop(self, delta=1e-4):
     val_loss = self.validation_history["loss"]

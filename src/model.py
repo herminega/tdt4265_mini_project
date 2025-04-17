@@ -81,11 +81,11 @@ class NNUNet(NNUNet):
             spatial_dims=3,
             in_channels=in_channels,
             out_channels=out_channels,
-            channels=(32, 64, 128, 256, 320),
+            channels=(32, 64, 128, 256, 400),
             strides=(2, 2, 2, 2, 2),
             num_res_units=2,
             norm="INSTANCE",
-            dropout=0.3,
+            dropout=0.4,
         )        
    
 def get_model(model_type="unet", in_channels=1, out_channels=3, pretrained=False):

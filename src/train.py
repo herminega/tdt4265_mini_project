@@ -7,6 +7,7 @@ from torch.amp import GradScaler, autocast
 from monai.losses import DiceLoss, DiceCELoss
 from monai.metrics import DiceMetric
 from monai.networks.utils import one_hot
+from monai.inferers import sliding_window_inference
 from model import get_model
 from dataloader import get_mri_dataloader
 from utils import (
@@ -45,7 +46,10 @@ class Trainer:
         )
 
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=learning_rate, weight_decay=5e-5)
-        self.scheduler = self._init_scheduler(scheduler_type, epochs)
+        # compute total training steps for OneCycle (num_epochs * steps_per_epoch)
+        total_steps = epochs * len(self.train_loader)
+        self.scheduler = self._init_scheduler(scheduler_type, total_steps, base_lr=learning_rate)
+        
 
         self.epochs = epochs
         self.early_stop_count = early_stop_count
@@ -62,15 +66,29 @@ class Trainer:
 
         self.dice_metric = DiceMetric(include_background=False, reduction="none", get_not_nans=True)
         
-    def _init_scheduler(self, scheduler_type, epochs):
+    def _init_scheduler(self, scheduler_type, total_steps, base_lr):
         if scheduler_type.lower() == "plateau":
             return torch.optim.lr_scheduler.ReduceLROnPlateau(
                 self.optimizer, mode='min', factor=0.5, patience=10, verbose=True, min_lr=1e-6
             )
         elif scheduler_type.lower() == "cosine":
-            return torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=epochs)
+            return torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=total_steps)
+        
+        elif scheduler_type.lower() == "onecycle":
+            return torch.optim.lr_scheduler.OneCycleLR(
+                optimizer      = self.optimizer,
+                max_lr         = 1e-3,           # your peak LR
+                total_steps    = total_steps,    # epochs * steps_per_epoch
+                pct_start      = 0.15,           # 15% of total_steps warming up
+                anneal_strategy= "cos",          # cosine annealing down
+                div_factor     = 25.0,           # start LR = max_lr / div_factor → 4e-5
+                final_div_factor=1000.0,         # end   LR = max_lr / final_div_factor → 1e-6
+                three_phase    = False,          # two‑phase (up then down)
+                last_epoch     = -1,
+            )
         else:
-            raise ValueError("Unsupported scheduler_type. Use 'plateau' or 'cosine'.")
+            raise ValueError("Unsupported scheduler_type. Use 'plateau', 'cosine' or 'onecycle'.")
+
     
     def train_step(self, inputs, labels):
         self.model.train()
@@ -124,7 +142,7 @@ class Trainer:
                 if epoch == 70:
                     print("Switching to reduced-patience scheduler (patience=5)")
                     self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-                        self.optimizer, mode='min', factor=0.5, patience=7, verbose=True, min_lr=1e-6
+                        self.optimizer, mode='min', factor=0.3, patience=7, verbose=True, min_lr=1e-6
                     )
                 
                 if epoch == 120:
@@ -200,7 +218,13 @@ class Trainer:
         with torch.no_grad():
             for idx, batch in enumerate(self.val_loader):
                 inputs, labels = batch["image"].to(self.device), batch["label"].to(self.device)
-                outputs = self.model(inputs)
+                outputs = sliding_window_inference(
+                    inputs,                                  # [B, C, H, W, D]
+                    roi_size=(192, 192, 48),                 # match your train crop
+                    sw_batch_size=1,                         # how many windows to process at once
+                    predictor=self.model,                    # your nnunet
+                    overlap=0.5,                             # 50% overlap + gaussian blending
+                )
                 loss = self.loss_criterion(outputs, labels)
                 total_loss += loss.item()
 

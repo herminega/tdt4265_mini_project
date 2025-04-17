@@ -1,12 +1,12 @@
-import datetime
 import pathlib
 import yaml
+from utils import save_model, set_global_seed
+set_global_seed(0)
 from train import Trainer
-from utils import save_model
 
 if __name__ == "__main__":
     # Define experiment-specific folder structure.
-    EXPERIMENT = "exp15_nnunet"
+    EXPERIMENT = "exp20_nnunet"
     BASE_SAVE_PATH = pathlib.Path("results") / EXPERIMENT
     CHECKPOINT_DIR = BASE_SAVE_PATH / "checkpoints"
     MODEL_DIR = BASE_SAVE_PATH / "models"

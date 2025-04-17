@@ -4,20 +4,12 @@ import monai
 from monai.transforms import (
     LoadImaged,  
     EnsureChannelFirstd,
-    ScaleIntensityd,
     NormalizeIntensityd,   
     ResizeWithPadOrCropd,
     RandAffined,
     RandBiasFieldd,
-    AsDiscreted,
-    Lambdad,
     RandFlipd, 
     RandGaussianNoised,
-    Rand3DElasticd,
-    HistogramNormalized,
-    AdjustContrastd,
-    EnsureTyped,
-    RandCropByLabelClassesd,
     RandCropByPosNegLabeld,
     Spacingd,
     CropForegroundd,
@@ -25,27 +17,71 @@ from monai.transforms import (
     Compose,
 )
 from monai.data import Dataset, DataLoader, pad_list_data_collate, CacheDataset
-import nibabel as nib
 from torch.utils.data import Subset
 import numpy as np
 
-monai.utils.set_determinism(seed=42)
+def base_transforms(pixdim=(1.,1.,1.), spatial_size=(192,192,48)):
+    return [
+        LoadImaged(keys=["image", "label"]),
+        EnsureChannelFirstd(keys=["image", "label"]),
+        Spacingd(keys=["image","label"], pixdim=pixdim, mode=("bilinear","nearest")),
+        CropForegroundd(keys=["image","label"], source_key="image", allow_smaller=True),
+        NormalizeIntensityd(keys=["image"], nonzero=True, channel_wise=True),
+        ResizeWithPadOrCropd(keys=["image","label"], spatial_size=spatial_size),
+        ToTensord(keys=["image","label"]),
+    ]
 
-from monai.transforms import MapTransform
-import numpy as np
-import torch
+def train_transforms(**kwargs):
+    # Define the transforms for training
+        return Compose([
+            # 1. Load the image and label files.
+            LoadImaged(keys=["image", "label"]),
+            
+            # 2. Ensure channel-first ordering.
+            EnsureChannelFirstd(keys=["image", "label"]),
+            
+            Spacingd(
+                keys=["image", "label"],
+                pixdim=(1.0, 1.0, 1.0),
+                mode=("bilinear", "nearest"),
+            ),
+            
+            # 3. Crop the image to the foreground.
+            CropForegroundd(keys=["image", "label"], source_key="image", allow_smaller=True),
+            
+            # 4. Normalize the image intensity.
+            NormalizeIntensityd(keys=["image"], nonzero=True, channel_wise=True),
+            
+            # 5. Randomly crop the image and label to a specified size.
+            RandCropByPosNegLabeld(
+                keys=["image", "label"],
+                label_key="label",
+                spatial_size=(192, 192, 48),
+                pos=2,
+                neg=0.5,
+                num_samples=6,
+            ),
+            
+            # 6. Resize or pad the crop to a fixed size.
+            ResizeWithPadOrCropd(keys=["image", "label"], spatial_size=(192, 192, 48)),
+            
+            # 7. Augmentations
+            RandFlipd(keys=["image", "label"], prob=0.2, spatial_axis=[0, 1]),
+            RandAffined(
+                keys=["image", "label"],
+                rotate_range=(0.1, 0.1, 0.1),
+                scale_range=(0.1, 0.1, 0.1),
+                prob=0.2,
+            ),
+            RandGaussianNoised(keys=["image"], prob=0.2, mean=0.0, std=0.05),
+            RandBiasFieldd(keys=["image"], prob=0.15),
 
+            # 8. Convert to tensors.
+            ToTensord(keys=["image", "label"]),        
+        ])
 
-def get_subset_dataloader(dataset, indices, fraction=0.5, batch_size=2):
-    """
-    Returns a DataLoader for a subset of the dataset.
-    This function ensures we only take a subset from a predefined set of indices (train or validation).
-    """
-    subset_size = int(len(indices) * fraction)
-    subset_indices = np.random.choice(indices, subset_size, replace=False)  # Sample from indices
-    subset = Subset(dataset, subset_indices)
-    return DataLoader(subset, batch_size=batch_size, shuffle=True, drop_last=False)
-
+def test_transforms(**kwargs):
+    return Compose(base_transforms(**kwargs))
 
 def get_mri_dataloader(data_dir: str, subset="train", batch_size=2, validation_fraction=0.1):
     """
@@ -53,49 +89,13 @@ def get_mri_dataloader(data_dir: str, subset="train", batch_size=2, validation_f
     - subset: "train" or "test"
     - batch_size: Number of samples per batch
     """
- 
-    transforms = Compose([
-        # 1. Load the image and label files.
-        LoadImaged(keys=["image", "label"]),
-        
-        # 2. Ensure channel-first ordering.
-        EnsureChannelFirstd(keys=["image", "label"]),
-        
-        # 3. Crop the image to the foreground.
-        CropForegroundd(keys=["image", "label"], source_key="image", allow_smaller=True),
-        
-        # 4. Normalize the image intensity.
-        NormalizeIntensityd(keys=["image"], nonzero=True, channel_wise=True),
-        
-        # 5. Force sampling from specific label classes.
-        RandCropByLabelClassesd(
-            keys=["image", "label"],
-            label_key="label",
-            spatial_size=(192, 192, 48),  # Patch size in voxels.
-            ratios=[0.1, 0.45, 0.45],     # Background, GTVp (class 1), and GTVn (class 2).
-            num_samples=3,     
-            num_classes=3,        
-            allow_smaller=True
-        ),
-        
-        # 6. Resize or pad the crop to a fixed size.
-        ResizeWithPadOrCropd(keys=["image", "label"], spatial_size=(192, 192, 48)),
-        
-        # 7. Augmentations
-        RandFlipd(keys=["image", "label"], prob=0.1, spatial_axis=[0, 1]),
-        RandAffined(
-            keys=["image", "label"],
-            rotate_range=(0.1, 0.1, 0.1),
-            scale_range=(0.1, 0.1, 0.1),
-            prob=0.1,
-        ),
-        RandGaussianNoised(keys=["image"], prob=0.1, mean=0.0, std=0.05),
-        #RandBiasFieldd(keys=["image"], prob=0.15),
-
-        # 8. Convert to tensors.
-        ToTensord(keys=["image", "label"]),
-    ])
-     
+    monai.utils.set_determinism(seed=0)
+    
+    if subset == "test":
+        transforms = test_transforms()
+    else:
+        transforms = train_transforms()
+    
     # Path to train or test directory
     subset_dir = os.path.join(data_dir, subset)
     patient_folders = sorted(os.listdir(subset_dir))
@@ -121,26 +121,44 @@ def get_mri_dataloader(data_dir: str, subset="train", batch_size=2, validation_f
             "image": full_image_path,
             "label": full_mask_path
         })
-
-    #Use dictionary-based Dataset
-    #dataset = Dataset(data=data_list, transform=transforms)
     
     dataset = CacheDataset(data=data_list, transform=transforms, cache_rate=1.0, num_workers=4)
-
     
-    # Split into training & validation sets
-    num_samples = len(dataset)
-    indices = torch.randperm(num_samples)
-    split_idx = int(num_samples * validation_fraction)
-
-    train_indices, val_indices = indices[split_idx:], indices[:split_idx]
-
-    train_loader = DataLoader(dataset, batch_size=batch_size, sampler=torch.utils.data.SubsetRandomSampler(train_indices), drop_last=False, collate_fn=pad_list_data_collate)
-    val_loader = DataLoader(dataset, batch_size=batch_size, sampler=torch.utils.data.SubsetRandomSampler(val_indices), drop_last=False, collate_fn=pad_list_data_collate)
-
-    #train_loader = get_subset_dataloader(dataset, train_indices, fraction=0.5, batch_size=2)
-    #val_loader = get_subset_dataloader(dataset, val_indices, fraction=0.5, batch_size=2)
+    # if test, return immediately
+    if subset == "test":
+        return None, DataLoader(
+            dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=4,
+            pin_memory=True,
+        )
     
+    # else: reproducible split into train/val
+    num = len(dataset)
+    split = int(num * validation_fraction)
+    g = torch.Generator().manual_seed(0)
+    idxs = torch.randperm(num, generator=g)
+    train_idx, val_idx = idxs[split:], idxs[:split]
+
+    train_loader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        sampler=torch.utils.data.SubsetRandomSampler(train_idx, generator=g),
+        drop_last=False,
+        collate_fn=pad_list_data_collate,
+        num_workers=4,
+        pin_memory=True,
+    )
+    val_loader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        sampler=torch.utils.data.SubsetRandomSampler(val_idx, generator=g),
+        drop_last=False,
+        collate_fn=pad_list_data_collate,
+        num_workers=4,
+        pin_memory=True,
+    )
     return train_loader, val_loader
 
 
