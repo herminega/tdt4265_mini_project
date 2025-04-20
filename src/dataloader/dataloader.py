@@ -39,7 +39,7 @@ def base_transforms(pixdim=(1.,1.,1.), spatial_size=(192,192,48)):
         Spacingd(keys=["image","label"], pixdim=pixdim, mode=("bilinear","nearest")),
         CropForegroundd(keys=["image","label"], source_key="image", allow_smaller=True),
         NormalizeIntensityd(keys=["image"], nonzero=True, channel_wise=True),
-        ResizeWithPadOrCropd(keys=["image","label"], spatial_size=spatial_size),
+        #ResizeWithPadOrCropd(keys=["image","label"], spatial_size=spatial_size),
         ToTensord(keys=["image","label"]),
     ]
 
