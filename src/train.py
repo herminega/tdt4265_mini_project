@@ -104,21 +104,18 @@ class Trainer:
         self.model.train()
         self.optimizer.zero_grad()
 
-        # 1) forward + loss under autocast
-        with autocast():
-            outputs = self.model(inputs)
-            loss    = self.loss_criterion(outputs, labels)
+        # 1) forward
+        outputs = self.model(inputs)
+        loss    = self.loss_criterion(outputs, labels)
 
-        # 2) backward (scaled)
-        self.scaler.scale(loss).backward()
+        # 2) backward
+        loss.backward()
 
-        # 3) un‐scale the gradients before clipping
-        self.scaler.unscale_(self.optimizer)
+        # 3) gradient clipping
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=5.0)
 
-        # 4) step/ update
-        self.scaler.step(self.optimizer)
-        self.scaler.update()
+        # 4) step optimizer
+        self.optimizer.step()
 
         return loss.item(), outputs
 
