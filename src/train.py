@@ -3,7 +3,7 @@ import collections
 import pathlib
 import numpy as np
 from tqdm import tqdm
-from torch.amp import GradScaler, autocast
+from torch.amp import autocast, GradScaler
 from monai.losses import DiceLoss, DiceCELoss
 from monai.metrics import DiceMetric
 from monai.networks.utils import one_hot
@@ -24,35 +24,46 @@ from utils import (
 class Trainer:
     def __init__(
         self,
-        data_dir,
-        batch_size,
-        learning_rate,
-        early_stop_count,
-        epochs,
+        data_dir=None,
+        batch_size=None,
+        train_loader=None,
+        val_loader=None,
+        learning_rate=None,
+        early_stop_count=None,
+        epochs=None,
         in_channels=1,
         out_channels=3,
         checkpoint_dir=None,
-        scheduler_type="plateau",
+        scheduler_type="cosine",
     ):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print(f"Using device: {self.device}")
 
+        # build model
         self.model = get_model("nnunet", in_channels, out_channels, pretrained=False).to(self.device)
-        self.train_loader, self.val_loader = get_mri_dataloader(data_dir, "train", batch_size, validation_fraction=0.1)
+
+        # assign epochs before scheduler
+        self.epochs = epochs
+        self.early_stop_count = early_stop_count
+
+        # if loaders supplied, use them; otherwise fall back to dataloader helper
+        if train_loader is not None and val_loader is not None:
+            self.train_loader, self.val_loader = train_loader, val_loader
+        else:
+            assert data_dir and batch_size, "Must supply data_dir+batch_size or train_loader+val_loader"
+            self.train_loader, self.val_loader = get_mri_dataloader(
+                data_dir, "train", batch_size, validation_fraction=0.1
+            )
 
         class_weights = torch.tensor([0.4, 1.7, 1.5]).to(self.device)
         self.loss_criterion = DiceCELoss(
             to_onehot_y=True, softmax=True, smooth_dr=0.0001,
-            weight=class_weights, lambda_dice=0.7, lambda_ce=0.3
+            weight=class_weights, lambda_dice=0.5, lambda_ce=0.5
         )
 
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=learning_rate, weight_decay=5e-5)
-        # compute total training steps for OneCycle (num_epochs * steps_per_epoch)
         self.scheduler = self._init_scheduler(scheduler_type, base_lr=learning_rate)
-        
 
-        self.epochs = epochs
-        self.early_stop_count = early_stop_count
         self.global_step = 0
         self.train_history = {"loss": collections.OrderedDict(), "dice": collections.OrderedDict()}
         self.validation_history = {"loss": collections.OrderedDict(), "dice": collections.OrderedDict()}
@@ -66,38 +77,51 @@ class Trainer:
         self.logs_dir.mkdir(parents=True, exist_ok=True)
 
         self.dice_metric = DiceMetric(include_background=False, reduction="none", get_not_nans=True)
-        
+        self.scaler = GradScaler()
+
     def _init_scheduler(self, scheduler_type, base_lr):
         if scheduler_type.lower() == "plateau":
             return torch.optim.lr_scheduler.ReduceLROnPlateau(
                 self.optimizer,
                 mode="max",
-                factor=0.5,          # halves the LR on each drop
-                patience=12,         # wait 12 epochs of no dice‐gain
-                threshold=1e-4,      # require at least this improvement
-                cooldown=4,          # after a drop, give 4 epochs to recover
+                factor=0.5,
+                patience=12,
+                threshold=1e-4,
+                cooldown=4,
                 min_lr=1e-6,
                 verbose=True,
             )
         elif scheduler_type.lower() == "cosine":
-            return torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=self.epochs)
+            return torch.optim.lr_scheduler.CosineAnnealingLR(
+                self.optimizer,
+                T_max=self.epochs,
+                eta_min=1e-6
+            )
         else:
-            raise ValueError("Unsupported scheduler_type. Use 'plateau', 'cosine'.")
+            raise ValueError("Unsupported scheduler_type. Use 'plateau' or 'cosine'.")
 
-    
     def train_step(self, inputs, labels):
         self.model.train()
         self.optimizer.zero_grad()
-        outputs = self.model(inputs)
-        
-        loss = self.loss_criterion(outputs, labels)
-        loss.backward()
-        
+
+        # 1) forward + loss under autocast
+        with autocast():
+            outputs = self.model(inputs)
+            loss    = self.loss_criterion(outputs, labels)
+
+        # 2) backward (scaled)
+        self.scaler.scale(loss).backward()
+
+        # 3) un‐scale the gradients before clipping
+        self.scaler.unscale_(self.optimizer)
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=5.0)
-        self.optimizer.step()
-        
+
+        # 4) step/ update
+        self.scaler.step(self.optimizer)
+        self.scaler.update()
+
         return loss.item(), outputs
-    
+
 
     def train(self):
         for epoch in range(1, self.epochs + 1):
@@ -112,7 +136,7 @@ class Trainer:
                 loss, outputs = self.train_step(inputs, labels)
                 self.global_step += 1
                 epoch_loss += loss
-                
+
                 softmax_outputs = torch.softmax(outputs.detach(), dim=1)
                 pred_indices = torch.argmax(softmax_outputs, dim=1)
                 onehot_pred = one_hot(pred_indices.unsqueeze(1), num_classes=3)
@@ -120,7 +144,6 @@ class Trainer:
                 self.dice_metric(onehot_pred, onehot_labels)
 
                 self.train_history["loss"][self.global_step] = loss
-
                 true = labels.squeeze(1)
                 for cls in [1, 2]:
                     TP = ((pred_indices == cls) & (true == cls)).sum().item()
@@ -132,18 +155,17 @@ class Trainer:
 
             metrics = self._finalize_epoch(epoch_loss, total_TP, total_FP, total_FN, self.train_history, loader_len=len(self.train_loader))
             val_metrics = self.validate()
-            
+
+            # step scheduler
             if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
                 self.scheduler.step(val_metrics["mean_dice"])
             else:
                 self.scheduler.step()
-            
+
             current_lr = self.optimizer.param_groups[0]["lr"]
             self.lr_history[self.current_epoch] = current_lr
- 
-            for param_group in self.optimizer.param_groups:
-                print(f"Current LR: {param_group['lr']:.6f}")
-                
+            print(f"Current LR: {current_lr:.6f}")
+
             log_metrics(epoch, metrics, val_metrics)
             save_history_log(self.train_history, self.validation_history, self.lr_history, path=self.logs_dir / f"history_{epoch:03d}.json")
             save_checkpoint(
@@ -158,12 +180,11 @@ class Trainer:
                 total_epochs=self.epochs,
                 checkpoint_dir=self.checkpoint_dir
             )
-            
+
             if should_early_stop(self):
                 print("Early stopping triggered.")
                 break
-                   
-            
+                  
     def _finalize_epoch(self, epoch_loss, TP, FP, FN, history, loader_len):
         avg_loss = epoch_loss / loader_len  # <-- now it's flexible
         per_class_dice, _ = self.dice_metric.aggregate()

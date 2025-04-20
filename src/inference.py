@@ -137,4 +137,57 @@ def evaluate(
         "prec_class2": prec2,
         "recall_class2": rec2,
     }
+    
+
+import pathlib
+import numpy as np
+import nibabel as nib
+import torch
+from monai.metrics import DiceMetric
+
+def load_nifti(path: pathlib.Path) -> np.ndarray:
+    """Load a NIfTI file and return its data array."""
+    return nib.load(str(path)).get_fdata().astype(np.int32)
+
+
+def evaluate_predictions(
+    output_dir: str,
+):
+    """
+    Compute mean Dice over saved ensembled predictions and their ground-truth labels
+    in a flat output directory containing label_*.nii.gz and prediction_*.nii.gz.
+
+    Args:
+        output_dir: directory where ensemble_inference.py saved image_*, label_*, prediction_* NIfTIs
+    """
+    output_dir = pathlib.Path(output_dir)
+    label_files = sorted(output_dir.glob("label_*.nii.gz"))
+    pred_files  = sorted(output_dir.glob("prediction_*.nii.gz"))
+    assert len(label_files) == len(pred_files), \
+        f"Mismatch: {len(label_files)} labels vs {len(pred_files)} predictions"
+
+    # MONAI DiceMetric expects Tensor inputs of shape (B, C, H, W, D)
+    dice_metric = DiceMetric(include_background=False, reduction="mean", get_not_nans=False)
+    dice_values = []
+
+    for lbl_path, pred_path in zip(label_files, pred_files):
+        gt = load_nifti(lbl_path)
+        pred = load_nifti(pred_path)
+        # one-hot encode for classes 1 and 2
+        gt_oh   = np.stack([(gt == 1), (gt == 2)], axis=0)[None]  # shape (1,2,H,W,D)
+        pred_oh = np.stack([(pred == 1), (pred == 2)], axis=0)[None]
+
+        # convert to Tensors
+        gt_t   = torch.from_numpy(gt_oh.astype(np.float32))
+        pred_t = torch.from_numpy(pred_oh.astype(np.float32))
+
+        # compute Dice
+        dice = dice_metric(pred_t, gt_t).item()
+        dice_values.append(dice)
+
+    mean_dice = float(np.mean(dice_values))
+    print(f"Evaluated {len(dice_values)} cases → Mean Dice (GTVp & GTVn): {mean_dice:.4f}")
+    return dice_values
+
+
 

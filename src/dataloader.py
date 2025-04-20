@@ -59,9 +59,9 @@ def train_transforms(**kwargs):
                 keys=["image", "label"],
                 label_key="label",
                 spatial_size=(192, 192, 48),
-                pos=5,
-                neg=0.5,
-                num_samples=6,
+                pos=1,
+                neg=2,
+                num_samples=3,
             ),
             
             # 6. Resize or pad the crop to a fixed size.
@@ -77,15 +77,16 @@ def train_transforms(**kwargs):
             ),
             RandGaussianNoised(keys=["image"], prob=0.2, mean=0.0, std=0.05),
             RandBiasFieldd(keys=["image"], prob=0.15),
+            RandScaleIntensityd(keys="image", factors=0.1, prob=0.3),
             # **new**: elastic warp
-            #Rand3DElasticd(
-            #    keys=["image", "label"],
-            #    sigma_range=(5.0, 8.0),           # controls smoothness
-            #    magnitude_range=(100, 200),       # controls strength
-            #    prob=0.2,
-            #    spatial_size=(192,192,48),        # warp field size
-            #    mode=("bilinear", "nearest"),
-            #),  
+            Rand3DElasticd(
+                keys=["image", "label"],
+                sigma_range=(4.0, 6.0),           # controls smoothness
+                magnitude_range=(50, 150),       # controls strength
+                prob=0.2,
+                spatial_size=(192,192,48),        # warp field size
+                mode=("bilinear", "nearest"),
+            ),  
 
             # 8. Convert to tensors.
             ToTensord(keys=["image", "label"]),        

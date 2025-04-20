@@ -59,7 +59,7 @@ class UNet3D(UNet):
             dropout=0.4  # Prevents overfitting 
         )
 
-class DynUNet(DynUNet):
+class CustomDynUNet(DynUNet):
     def __init__(self, in_channels, out_channels):
         super().__init__(
             spatial_dims=3,
@@ -74,14 +74,14 @@ class DynUNet(DynUNet):
         ) 
 
 
-class NNUNet(NNUNet):
+class CustomNNUNet(UNet):
     def __init__(self, in_channels, out_channels):
         super().__init__(
             spatial_dims=3,
             in_channels=in_channels,
             out_channels=out_channels,
             channels=(32, 64, 128, 256, 512),
-            strides=(2, 2, 2, 2, 2),
+            strides=(2, 2, 2, 2),
             num_res_units=2,
             norm="INSTANCE",
             dropout=0.3,
@@ -92,10 +92,10 @@ def get_model(model_type="unet", in_channels=1, out_channels=3, pretrained=False
         return UNet3D(in_channels=in_channels, out_channels=out_channels)
 
     elif model_type.lower() == "dynunet":
-        return DynUNet(in_channels=in_channels, out_channels=out_channels)
+        return CustomDynUNet(in_channels=in_channels, out_channels=out_channels)
     
     elif model_type.lower() == "nnunet":
-        return NNUNet(in_channels=in_channels, out_channels=out_channels)
+        return CustomNNUNet(in_channels=in_channels, out_channels=out_channels)
 
     elif model_type.lower() == "segresnet":
         if pretrained:
