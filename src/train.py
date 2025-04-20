@@ -18,6 +18,7 @@ from utils import (
     freeze_encoder,
     is_best_model,
     save_history_log,
+    remove_small_cc,
 )
 
 class Trainer:
@@ -39,7 +40,7 @@ class Trainer:
         self.model = get_model("nnunet", in_channels, out_channels, pretrained=False).to(self.device)
         self.train_loader, self.val_loader = get_mri_dataloader(data_dir, "train", batch_size, validation_fraction=0.1)
 
-        class_weights = torch.tensor([0.4, 1.5, 1.5]).to(self.device)
+        class_weights = torch.tensor([0.4, 1.7, 1.5]).to(self.device)
         self.loss_criterion = DiceCELoss(
             to_onehot_y=True, softmax=True, smooth_dr=0.0001,
             weight=class_weights, lambda_dice=0.7, lambda_ce=0.3
@@ -47,8 +48,7 @@ class Trainer:
 
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=learning_rate, weight_decay=5e-5)
         # compute total training steps for OneCycle (num_epochs * steps_per_epoch)
-        total_steps = epochs * len(self.train_loader)
-        self.scheduler = self._init_scheduler(scheduler_type, total_steps, base_lr=learning_rate)
+        self.scheduler = self._init_scheduler(scheduler_type, base_lr=learning_rate)
         
 
         self.epochs = epochs
@@ -56,6 +56,7 @@ class Trainer:
         self.global_step = 0
         self.train_history = {"loss": collections.OrderedDict(), "dice": collections.OrderedDict()}
         self.validation_history = {"loss": collections.OrderedDict(), "dice": collections.OrderedDict()}
+        self.lr_history = collections.OrderedDict()
 
         self.checkpoint_dir = checkpoint_dir or pathlib.Path("results") / "checkpoints"
         self.base_dir = self.checkpoint_dir.parent
@@ -66,28 +67,22 @@ class Trainer:
 
         self.dice_metric = DiceMetric(include_background=False, reduction="none", get_not_nans=True)
         
-    def _init_scheduler(self, scheduler_type, total_steps, base_lr):
+    def _init_scheduler(self, scheduler_type, base_lr):
         if scheduler_type.lower() == "plateau":
             return torch.optim.lr_scheduler.ReduceLROnPlateau(
-                self.optimizer, mode='min', factor=0.5, patience=10, verbose=True, min_lr=1e-6
+                self.optimizer,
+                mode="max",
+                factor=0.5,          # halves the LR on each drop
+                patience=12,         # wait 12 epochs of no dice‐gain
+                threshold=1e-4,      # require at least this improvement
+                cooldown=4,          # after a drop, give 4 epochs to recover
+                min_lr=1e-6,
+                verbose=True,
             )
         elif scheduler_type.lower() == "cosine":
-            return torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=total_steps)
-        
-        elif scheduler_type.lower() == "onecycle":
-            return torch.optim.lr_scheduler.OneCycleLR(
-                optimizer      = self.optimizer,
-                max_lr         = 1e-3,           # your peak LR
-                total_steps    = total_steps,    # epochs * steps_per_epoch
-                pct_start      = 0.15,           # 15% of total_steps warming up
-                anneal_strategy= "cos",          # cosine annealing down
-                div_factor     = 25.0,           # start LR = max_lr / div_factor → 4e-5
-                final_div_factor=1000.0,         # end   LR = max_lr / final_div_factor → 1e-6
-                three_phase    = False,          # two‑phase (up then down)
-                last_epoch     = -1,
-            )
+            return torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=self.epochs)
         else:
-            raise ValueError("Unsupported scheduler_type. Use 'plateau', 'cosine' or 'onecycle'.")
+            raise ValueError("Unsupported scheduler_type. Use 'plateau', 'cosine'.")
 
     
     def train_step(self, inputs, labels):
@@ -139,30 +134,18 @@ class Trainer:
             val_metrics = self.validate()
             
             if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
-                if epoch == 70:
-                    print("Switching to reduced-patience scheduler (patience=5)")
-                    self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-                        self.optimizer, mode='min', factor=0.3, patience=7, verbose=True, min_lr=1e-6
-                    )
-                
-                if epoch == 120:
-                    print("Manual LR drop to 2e-5")
-                    for param_group in self.optimizer.param_groups:
-                        param_group['lr'] = 2e-5
-                    # Optional: Freeze scheduler after manual LR drop
-                    self.scheduler = None
-                    
-                if self.scheduler is not None:
-                    self.scheduler.step(val_metrics["loss"])
+                self.scheduler.step(val_metrics["mean_dice"])
             else:
                 self.scheduler.step()
-
             
+            current_lr = self.optimizer.param_groups[0]["lr"]
+            self.lr_history[self.current_epoch] = current_lr
+ 
             for param_group in self.optimizer.param_groups:
                 print(f"Current LR: {param_group['lr']:.6f}")
-
+                
             log_metrics(epoch, metrics, val_metrics)
-            save_history_log(self.train_history, self.validation_history, path=self.logs_dir / f"history_{epoch:03d}.json")
+            save_history_log(self.train_history, self.validation_history, self.lr_history, path=self.logs_dir / f"history_{epoch:03d}.json")
             save_checkpoint(
                 model=self.model,
                 optimizer=self.optimizer,
@@ -230,6 +213,19 @@ class Trainer:
 
                 softmax_outputs = torch.softmax(outputs.detach(), dim=1)
                 pred_indices = torch.argmax(softmax_outputs, dim=1)
+                
+                
+                # ─── Connected‑component cleanup ───
+                # move predictions to CPU numpy
+                pred_clean = []
+                for b in range(pred_indices.shape[0]):
+                    raw_np     = pred_indices[b].cpu().numpy()
+                    cleaned_np = remove_small_cc(raw_np, min_voxels=300)
+                    pred_clean.append(torch.from_numpy(cleaned_np))
+                # stack & restore device
+                pred_indices = torch.stack(pred_clean, dim=0).to(self.device)
+                # ────────────────────────────────────────
+                
                 onehot_pred = one_hot(pred_indices.detach().unsqueeze(1), num_classes=3)
                 onehot_labels = one_hot(labels.detach().long(), num_classes=3)
                 self.dice_metric(onehot_pred, onehot_labels)

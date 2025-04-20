@@ -6,7 +6,7 @@ from train import Trainer
 
 if __name__ == "__main__":
     # Define experiment-specific folder structure.
-    EXPERIMENT = "exp20_nnunet"
+    EXPERIMENT = "exp23_nnunet"
     BASE_SAVE_PATH = pathlib.Path("results") / EXPERIMENT
     CHECKPOINT_DIR = BASE_SAVE_PATH / "checkpoints"
     MODEL_DIR = BASE_SAVE_PATH / "models"
@@ -21,7 +21,7 @@ if __name__ == "__main__":
         "data_dir": "/datasets/tdt4265/mic/open/HNTS-MRG",
         "batch_size": 3,
         "learning_rate": 1e-3,
-        "early_stop_count": 15,
+        "early_stop_count": 20,
         "epochs": 200,
         "model": "nnunet",
         "loss_parameters": {
@@ -39,7 +39,7 @@ if __name__ == "__main__":
         data_dir="/datasets/tdt4265/mic/open/HNTS-MRG",
         batch_size=3,
         learning_rate=1e-3,
-        early_stop_count=15,
+        early_stop_count=20,
         epochs=200,
         checkpoint_dir=CHECKPOINT_DIR,  # pass the checkpoints folder
         in_channels=1,

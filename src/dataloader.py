@@ -15,6 +15,8 @@ from monai.transforms import (
     CropForegroundd,
     ToTensord,
     Compose,
+    Rand3DElasticd,
+    RandScaleIntensityd,
 )
 from monai.data import Dataset, DataLoader, pad_list_data_collate, CacheDataset
 from torch.utils.data import Subset
@@ -57,7 +59,7 @@ def train_transforms(**kwargs):
                 keys=["image", "label"],
                 label_key="label",
                 spatial_size=(192, 192, 48),
-                pos=2,
+                pos=5,
                 neg=0.5,
                 num_samples=6,
             ),
@@ -75,6 +77,15 @@ def train_transforms(**kwargs):
             ),
             RandGaussianNoised(keys=["image"], prob=0.2, mean=0.0, std=0.05),
             RandBiasFieldd(keys=["image"], prob=0.15),
+            # **new**: elastic warp
+            #Rand3DElasticd(
+            #    keys=["image", "label"],
+            #    sigma_range=(5.0, 8.0),           # controls smoothness
+            #    magnitude_range=(100, 200),       # controls strength
+            #    prob=0.2,
+            #    spatial_size=(192,192,48),        # warp field size
+            #    mode=("bilinear", "nearest"),
+            #),  
 
             # 8. Convert to tensors.
             ToTensord(keys=["image", "label"]),        

@@ -1,5 +1,4 @@
 import torch.nn as nn
-from monai.networks.blocks import UnetOutBlock
 from monai.networks.nets import UNet, DynUNet, UNet as NNUNet, SegResNet
 from monai.bundle import download, load
 
@@ -81,11 +80,11 @@ class NNUNet(NNUNet):
             spatial_dims=3,
             in_channels=in_channels,
             out_channels=out_channels,
-            channels=(32, 64, 128, 256, 400),
+            channels=(32, 64, 128, 256, 512),
             strides=(2, 2, 2, 2, 2),
             num_res_units=2,
             norm="INSTANCE",
-            dropout=0.4,
+            dropout=0.3,
         )        
    
 def get_model(model_type="unet", in_channels=1, out_channels=3, pretrained=False):

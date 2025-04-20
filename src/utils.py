@@ -3,10 +3,9 @@ import os, random
 import pathlib
 import numpy as np
 import nibabel as nib
-import time
 import datetime
-import yaml
 import json
+from scipy import ndimage
 
 
 def set_global_seed(seed: int = 0, deterministic: bool = True):
@@ -20,13 +19,24 @@ def set_global_seed(seed: int = 0, deterministic: bool = True):
         torch.backends.cudnn.benchmark     = False
         torch.use_deterministic_algorithms(True, warn_only=True)
 
-def should_early_stop(self, delta=1e-4):
-    val_loss = self.validation_history["loss"]
-    if len(val_loss) < self.early_stop_count:
+# utils.py
+
+def should_early_stop(self, delta: float = 1e-4):
+    """
+    Stop if the mean‐dice hasn’t improved by > delta over the last `early_stop_count` epochs.
+    """
+    val_dice = self.validation_history["dice"]
+    # not enough epochs yet
+    if len(val_dice) < self.early_stop_count:
         return False
-    recent = list(val_loss.values())[-self.early_stop_count:]
-    # Stop if no epoch in the recent window lowered the validation loss by more than delta compared to the best value.
-    return (min(recent) + delta) >= recent[0]
+
+    # take the last `early_stop_count` dice values
+    recent = list(val_dice.values())[-self.early_stop_count:]
+
+    # if the best dice in that window is no better than the first epoch’s dice + delta, stop
+    best_recent = max(recent)
+    return best_recent <= (recent[0] + delta)
+
 
 
 def save_checkpoint(model, optimizer, scheduler, validation_history, loss_criterion,
@@ -139,7 +149,7 @@ def is_best_model(global_step, validation_history):
     current_loss = validation_history["loss"][global_step]
     return current_loss == min(validation_history["loss"].values())
 
-def save_history_log(train_history, val_history, path):
+def save_history_log(train_history, val_history, lr_history, path):
     def to_serializable(obj):
         if isinstance(obj, dict):
             return {k: to_serializable(v) for k, v in obj.items()}
@@ -152,7 +162,25 @@ def save_history_log(train_history, val_history, path):
     history = {
         "train": to_serializable(train_history),
         "validation": to_serializable(val_history),
+        "lr": to_serializable(lr_history)
     }
 
     with open(path, "w") as f:
         json.dump(history, f, indent=4)
+        
+
+def remove_small_cc(seg: np.ndarray, min_voxels: int = 300) -> np.ndarray:
+    """
+    Remove connected components smaller than `min_voxels` from a 3D label array.
+    """
+    cleaned = np.zeros_like(seg)
+    for cls in np.unique(seg):
+        if cls == 0:
+            continue
+        mask = seg == cls
+        labeled, num_features = ndimage.label(mask)
+        sizes = ndimage.sum(mask, labeled, index=np.arange(1, num_features + 1))
+        for i, size in enumerate(sizes, start=1):
+            if size >= min_voxels:
+                cleaned[labeled == i] = cls
+    return cleaned
