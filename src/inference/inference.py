@@ -1,17 +1,15 @@
 """
-Inference and Ensemble Module
+inference.py
 
-Provides functions for:
-  - Single-model inference (`run_inference`)
-  - Quantitative evaluation (`evaluate` and `evaluate_predictions`)
-  - Ensemble inference (`ensemble_inference`)
-  
+Single‑model and ensemble inference + evaluation scripts.
+- run_inference(): slide‑window predict on test set, save NIfTIs or overlaid plots.
+- evaluate(): compute loss, Dice, precision, recall for one or multiple models.
+- ensemble_inference(): average softmax outputs across checkpoints, apply CC cleanup.
 """
 
 __all__ = [
     "run_inference",
     "evaluate",
-    "evaluate_predictions",
     "ensemble_inference",
 ]
 
@@ -19,8 +17,6 @@ from pathlib import Path
 import glob
 import torch
 import numpy as np
-import nibabel as nib
-import pandas as pd
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from typing import Tuple, Optional, Union, List
@@ -30,23 +26,15 @@ from monai.losses import DiceCELoss
 from monai.networks.utils import one_hot
 from monai.inferers import sliding_window_inference
 
-from utils import set_global_seed, remove_small_cc, save_nifti, save_predictions
-from dataloader import get_mri_dataloader
-from model import get_model
+from utils.metrics import set_global_seed, remove_small_cc
+from utils.file_io import save_nifti, save_predictions
+from dataloader.dataloader import get_mri_dataloader
+from models.model import get_model
+from utils.file_io import load_checkpoint
 
 # Fix seeds for reproducibility
 default_seed = 0
 set_global_seed(default_seed)
-
-def load_nifti(path: Path) -> np.ndarray:
-    """Load a NIfTI file and return its data array."""
-    return nib.load(str(path)).get_fdata().astype(np.int32)
-
-
-def load_checkpoint(checkpoint_path: str, model: torch.nn.Module, device: torch.device):
-    state = torch.load(checkpoint_path, map_location=device)
-    model.load_state_dict(state['model_state'])
-    return model
 
 
 def run_inference(
@@ -164,27 +152,6 @@ def evaluate(
         'prec_class2': prec2,
         'recall_class2': rec2,
     }
-
-
-def evaluate_predictions(
-    output_dir: str
-) -> pd.DataFrame:
-    out = Path(output_dir)
-    labels = sorted(out.glob("label_*.nii.gz"))
-    preds  = sorted(out.glob("prediction_*.nii.gz"))
-    assert len(labels)==len(preds)
-    dm = DiceMetric(include_background=False, reduction="mean", get_not_nans=False)
-    rec=[]
-    for l,p in zip(labels,preds):
-        gt = load_nifti(l); pr = load_nifti(p)
-        gt_oh = np.stack([(gt==1),(gt==2)],0)[None]
-        pr_oh = np.stack([(pr==1),(pr==2)],0)[None]
-        t_gt = torch.from_numpy(gt_oh.astype(np.float32))
-        t_pr = torch.from_numpy(pr_oh.astype(np.float32))
-        d = dm(t_pr, t_gt).item(); rec.append({'case':l.stem,'dice':d})
-    df=pd.DataFrame(rec)
-    print(f"Evaluated {len(df)} cases → Mean Dice: {df['dice'].mean():.4f}")
-    return df
 
 
 def ensemble_inference(

@@ -1,3 +1,13 @@
+"""
+dataloader.py
+
+Defines the data ingestion and preprocessing pipelines for MRI tumor segmentation.
+- Builds train / validation / test DataLoaders using MONAI’s CacheDataset + DataLoader.
+- Encapsulates base transforms (loading, normalization, resizing) and augmentations
+  (random crops, flips, elastic warps, intensity perturbations).
+- Ensures reproducible splits via fixed RNG seed.
+"""
+
 import os
 import torch
 import monai
@@ -172,6 +182,8 @@ def get_mri_dataloader(data_dir: str, subset="train", batch_size=2, validation_f
         pin_memory=True,
     )
     return train_loader, val_loader
+
+
 
 
 

@@ -1,43 +1,42 @@
+"""
+file_io.py
+
+All disk I/O related to models, checkpoints, predictions, and history.
+- save_checkpoint(): manage “last”/“best” ckpt saving with metadata.
+- save_model(): dump final state_dict to models directory.
+- save_nifti() & save_predictions(): convert tensors to NIfTI files.
+- load_history(): read JSON logs of training/validation metrics.
+- save_history_log(): serialize metric + LR histories to JSON.
+"""
+
+
 import torch
-import os, random
 import pathlib
 import numpy as np
 import nibabel as nib
 import datetime
 import json
-from scipy import ndimage
+from pathlib import Path
 
-
-def set_global_seed(seed: int = 0, deterministic: bool = True):
-    os.environ["PYTHONHASHSEED"] = str(seed)
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    if deterministic:
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark     = False
-        torch.use_deterministic_algorithms(True, warn_only=True)
-
-# utils.py
-
-def should_early_stop(self, delta: float = 1e-4):
+def load_history(history_path: str) -> dict:
     """
-    Stop if the mean‐dice hasn’t improved by > delta over the last `early_stop_count` epochs.
+    Load a JSON training history file into a Python dictionary.
     """
-    val_dice = self.validation_history["dice"]
-    # not enough epochs yet
-    if len(val_dice) < self.early_stop_count:
-        return False
+    path = Path(history_path)
+    with path.open('r') as f:
+        return json.load(f)
 
-    # take the last `early_stop_count` dice values
-    recent = list(val_dice.values())[-self.early_stop_count:]
+def load_nifti(file_path: str) -> np.ndarray:
+    """
+    Load a NIfTI file and return its image data as a NumPy array.
+    """
+    img = nib.load(str(file_path))
+    return img.get_fdata()
 
-    # if the best dice in that window is no better than the first epoch’s dice + delta, stop
-    best_recent = max(recent)
-    return best_recent <= (recent[0] + delta)
-
-
+def load_checkpoint(checkpoint_path: str, model: torch.nn.Module, device: torch.device):
+    state = torch.load(checkpoint_path, map_location=device)
+    model.load_state_dict(state['model_state'])
+    return model
 
 def save_checkpoint(model, optimizer, scheduler, validation_history, loss_criterion,
                     train_loader, epoch, global_step, total_epochs, checkpoint_dir):
@@ -115,40 +114,7 @@ def save_predictions(input_tensor, label_tensor, output_tensor, index, output_di
     save_nifti(input_tensor, f"{output_dir}/image_{index}.nii.gz")
     save_nifti(label_discrete, f"{output_dir}/label_{index}.nii.gz")
     save_nifti(prediction_discrete, f"{output_dir}/prediction_{index}.nii.gz")
-
     
-def log_metrics(epoch, train_metrics, val_metrics):
-    print(f"\nEpoch {epoch} Summary:")
-    print(f"\nTraining:")
-    print(f"  Loss: {train_metrics['loss']:.4f}")
-    print(f"  Mean Dice: {train_metrics['mean_dice']:.4f}")
-    print(f"  Class 1 Dice: {train_metrics['dice_class1']:.4f}")
-    print(f"  Class 2 Dice: {train_metrics['dice_class2']:.4f}")
-    print(f"\n  Class 1 : Precision {train_metrics['precision_class1']:.4f} / Recall {train_metrics['recall_class1']:.4f}")
-    print(f"  Class 2 : Precision {train_metrics['precision_class2']:.4f} / Recall {train_metrics['recall_class2']:.4f}")
-    
-    print(f"\nValidation:")
-    print(f"  Loss: {val_metrics['loss']:.4f} ")
-    print(f"  Mean Dice: {val_metrics['mean_dice']:.4f}")
-    print(f"  Class 1 Dice: {val_metrics['dice_class1']:.4f}")
-    print(f"  Class 2 Dice: {val_metrics['dice_class2']:.4f}")
-    print(f"\n  Class 1 : Precision {val_metrics['precision_class1']:.4f} / Recall {val_metrics['recall_class1']:.4f}")
-    print(f"  Class 2 : Precision {val_metrics['precision_class2']:.4f} / Recall {val_metrics['recall_class2']:.4f}")
-
-
-def freeze_encoder(model, freeze=True):
-    for name, param in model.named_parameters():
-        if "down" in name:  # or 'encoder' for other nets
-            param.requires_grad = not freeze
-
-def is_best_model(global_step, validation_history):
-    """
-    Determines if the model at the given global step is the best so far,
-    based on the lowest validation loss.
-    """
-    current_loss = validation_history["loss"][global_step]
-    return current_loss == min(validation_history["loss"].values())
-
 def save_history_log(train_history, val_history, lr_history, path):
     def to_serializable(obj):
         if isinstance(obj, dict):
@@ -169,18 +135,4 @@ def save_history_log(train_history, val_history, lr_history, path):
         json.dump(history, f, indent=4)
         
 
-def remove_small_cc(seg: np.ndarray, min_voxels: int = 300) -> np.ndarray:
-    """
-    Remove connected components smaller than `min_voxels` from a 3D label array.
-    """
-    cleaned = np.zeros_like(seg)
-    for cls in np.unique(seg):
-        if cls == 0:
-            continue
-        mask = seg == cls
-        labeled, num_features = ndimage.label(mask)
-        sizes = ndimage.sum(mask, labeled, index=np.arange(1, num_features + 1))
-        for i, size in enumerate(sizes, start=1):
-            if size >= min_voxels:
-                cleaned[labeled == i] = cls
-    return cleaned
+ 

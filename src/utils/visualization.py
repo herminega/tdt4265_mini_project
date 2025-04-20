@@ -1,25 +1,19 @@
+"""
+visualization.py
+
+All plotting functions for diagnostics and results.
+- visualize_slices(): show one axial slice with ground truth & prediction overlays.
+- show_multiple_slices(): grid of several image+mask slices.
+- plot_intensity_histogram(): distribution of voxel intensities.
+- plot_metrics(): training/validation curves over time.
+"""
+
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap
 from typing import List, Tuple, Dict
-import nibabel as nib
-import json
-from pathlib import Path
+from utils.file_io import load_nifti
 
-def load_history(history_path: str) -> dict:
-    """
-    Load a JSON training history file into a Python dictionary.
-    """
-    path = Path(history_path)
-    with path.open('r') as f:
-        return json.load(f)
-
-def load_nifti(file_path: str) -> np.ndarray:
-    """
-    Load a NIfTI file and return its image data as a NumPy array.
-    """
-    img = nib.load(str(file_path))
-    return img.get_fdata()
 
 def visualize_slices(image_path, label_path, prediction_path, slice_idx=None):
     image = load_nifti(image_path)
@@ -77,7 +71,6 @@ def plot_intensity_histogram(
     plt.ylabel("Frequency")
     plt.title(title)
     plt.show()
-
 
 def plot_metrics(
     history: Dict[str, Dict[str, Dict[str, float]]],
