@@ -8,14 +8,14 @@ Utility to generate a baseline config.yaml template.
 import yaml, pathlib
 
 # 1) Experiment–specific tweak here
-EXPERIMENT    = "exp24_nnunet"
+EXPERIMENT    = "exp25_nnunet"
 DATA_DIR      = "/datasets/tdt4265/mic/open/HNTS-MRG"
-BATCH_SIZE    = 3
+BATCH_SIZE    = 2
 LEARNING_RATE = 1e-3
 EARLY_STOP    = 20
 EPOCHS        = 200
 MODEL         = "nnunet"
-SCHEDULER     = "cosine"
+SCHEDULER     = "onecycle"  
 L_DICE        = 0.5
 L_CE          = 0.5
 

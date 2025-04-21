@@ -12,7 +12,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap
 from typing import List, Tuple, Dict
-from utils.file_io import load_nifti
+from src.utils.file_io import load_nifti
 
 
 def visualize_slices(image_path, label_path, prediction_path, slice_idx=None):

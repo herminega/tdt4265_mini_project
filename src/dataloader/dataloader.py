@@ -29,161 +29,184 @@ from monai.transforms import (
     RandScaleIntensityd,
 )
 from monai.data import Dataset, DataLoader, pad_list_data_collate, CacheDataset
-from torch.utils.data import Subset
 import numpy as np
 
-def base_transforms(pixdim=(1.,1.,1.), spatial_size=(192,192,48)):
+def base_transforms(pixdim=(1., 1., 1.), spatial_size=(192, 192, 48)):
+    """
+    The shared “backbone” for both train and test:
+      1) load
+      2) channel‑first
+      3) resample to 1 × 1 × 1 mm
+      4) crop to non‑zero
+      5) normalize (zero‑mean / unit‑var on non‑zero voxels)
+    """
     return [
         LoadImaged(keys=["image", "label"]),
         EnsureChannelFirstd(keys=["image", "label"]),
-        Spacingd(keys=["image","label"], pixdim=pixdim, mode=("bilinear","nearest")),
-        CropForegroundd(keys=["image","label"], source_key="image", allow_smaller=True),
+        Spacingd(
+            keys=["image", "label"],
+            pixdim=pixdim,
+            mode=("bilinear", "nearest"),
+        ),
+        CropForegroundd(keys=["image", "label"], source_key="image", allow_smaller=True),
         NormalizeIntensityd(keys=["image"], nonzero=True, channel_wise=True),
-        #ResizeWithPadOrCropd(keys=["image","label"], spatial_size=spatial_size),
-        ToTensord(keys=["image","label"]),
     ]
-
-def train_transforms(**kwargs):
-    # Define the transforms for training
-        return Compose([
-            # 1. Load the image and label files.
-            LoadImaged(keys=["image", "label"]),
-            
-            # 2. Ensure channel-first ordering.
-            EnsureChannelFirstd(keys=["image", "label"]),
-            
-            Spacingd(
-                keys=["image", "label"],
-                pixdim=(1.0, 1.0, 1.0),
-                mode=("bilinear", "nearest"),
-            ),
-            
-            # 3. Crop the image to the foreground.
-            CropForegroundd(keys=["image", "label"], source_key="image", allow_smaller=True),
-            
-            # 4. Normalize the image intensity.
-            NormalizeIntensityd(keys=["image"], nonzero=True, channel_wise=True),
-            
-            # 5. Randomly crop the image and label to a specified size.
+    
+def train_transforms(spatial_size=(192, 192, 48)):
+    """
+    Full augmentation pipeline *for training*:
+      – start from base
+      – randomly sample 8 patches per volume, ~⅓ containing tumor
+      – a suite of spatial+intensity augmentations
+      – finally pad/crop back to exactly spatial_size
+      – to Tensor
+    """
+    return Compose(
+            [
             RandCropByPosNegLabeld(
                 keys=["image", "label"],
                 label_key="label",
-                spatial_size=(192, 192, 48),
-                pos=1,
-                neg=2,
+                spatial_size=spatial_size,
+                pos=0.33,   # ~33% of your crops will contain tumor
+                neg=0.67,   # ~67% background‑only
                 num_samples=3,
             ),
-            
-            # 6. Resize or pad the crop to a fixed size.
-            ResizeWithPadOrCropd(keys=["image", "label"], spatial_size=(192, 192, 48)),
-            
-            # 7. Augmentations
-            RandFlipd(keys=["image", "label"], prob=0.2, spatial_axis=[0, 1]),
+            RandFlipd(keys=["image", "label"], prob=0.2, spatial_axis=[0, 1, 2]),
+            # ±10° rotations, ±10% scaling
             RandAffined(
                 keys=["image", "label"],
-                rotate_range=(0.1, 0.1, 0.1),
+                rotate_range=np.deg2rad((10, 10, 10)),
                 scale_range=(0.1, 0.1, 0.1),
-                prob=0.2,
+                prob=0.3,
             ),
-            RandGaussianNoised(keys=["image"], prob=0.2, mean=0.0, std=0.05),
-            RandBiasFieldd(keys=["image"], prob=0.15),
-            RandScaleIntensityd(keys="image", factors=0.1, prob=0.3),
-            # **new**: elastic warp
             Rand3DElasticd(
                 keys=["image", "label"],
-                sigma_range=(4.0, 6.0),           # controls smoothness
-                magnitude_range=(50, 150),       # controls strength
-                prob=0.2,
-                spatial_size=(192,192,48),        # warp field size
+                sigma_range=(10.0, 12.0),
+                magnitude_range=(20.0, 40.0),
+                spatial_size=spatial_size,
                 mode=("bilinear", "nearest"),
-            ),  
+                prob=0.3,
+            ),
+            RandGaussianNoised(keys=["image"], prob=0.2, mean=0.0, std=0.05),
+            RandBiasFieldd(keys=["image"], prob=0.2),
+            RandScaleIntensityd(keys=["image"], factors=0.1, prob=0.3),
+            ResizeWithPadOrCropd(keys=["image", "label"], spatial_size=spatial_size),
+            ToTensord(keys=["image", "label"]),
+        ]
+    )
 
-            # 8. Convert to tensors.
-            ToTensord(keys=["image", "label"]),        
-        ])
 
-def test_transforms(**kwargs):
-    return Compose(base_transforms(**kwargs))
-
-def get_mri_dataloader(data_dir: str, subset="train", batch_size=2, validation_fraction=0.1):
+def val_transforms(spatial_size=(192, 192, 48)):
     """
-    Loads MRI dataset using MONAI, ensuring correct pairing of images & masks.
-    - subset: "train" or "test"
-    - batch_size: Number of samples per batch
+    In validation (and test), *we do not* want any random crops or augmentations—
+    we simply want the full volumes (resampled & cropped to foreground),
+    then pad/crop to the same spatial size and convert to Tensor.
     """
+    return Compose(
+        [
+            ResizeWithPadOrCropd(keys=["image", "label"], spatial_size=spatial_size),
+            ToTensord(keys=["image", "label"]),
+        ]
+    )
+
+def test_transforms(spatial_size=(192, 192, 48)):
+    """
+    In validation (and test), *we do not* want any random crops or augmentations—
+    we simply want the full volumes (resampled & cropped to foreground),
+    then pad/crop to the same spatial size and convert to Tensor.
+    """
+    return Compose(
+        base_transforms() + 
+        [
+            ResizeWithPadOrCropd(keys=["image", "label"], spatial_size=spatial_size),
+            ToTensord(keys=["image", "label"]),
+        ]
+    )
+
+
+def get_mri_dataloader(
+    data_dir: str,
+    batch_size: int = 2,
+    validation_fraction: float = 0.1,
+):
     monai.utils.set_determinism(seed=0)
-    
-    if subset == "test":
-        transforms = test_transforms()
-    else:
-        transforms = train_transforms()
-    
-    # Path to train or test directory
-    subset_dir = os.path.join(data_dir, subset)
-    patient_folders = sorted(os.listdir(subset_dir))
 
-    # Store paired image-mask file paths
+    # 1) build your list of files
+    subset_dir = os.path.join(data_dir, "train")
     data_list = []
-    
-    for patient_id in patient_folders:
-        preRT_path = os.path.join(subset_dir, patient_id, "preRT")
+    for pid in sorted(os.listdir(subset_dir)):
+        preRT = os.path.join(subset_dir, pid, "preRT")
+        img = next((f for f in os.listdir(preRT) if f.endswith("T2.nii.gz")), None)
+        msk = next((f for f in os.listdir(preRT) if f.endswith("mask.nii.gz")), None)
+        if img and msk:
+            data_list.append({
+                "image": os.path.join(preRT, img),
+                "label": os.path.join(preRT, msk),
+            })
 
-        # Find image & mask
-        image_file = next((f for f in os.listdir(preRT_path) if f.endswith("T2.nii.gz")), None)
-        mask_file = next((f for f in os.listdir(preRT_path) if f.endswith("mask.nii.gz")), None)
-        
-        if image_file is None:
-            print(f"Warning: Skipping {patient_id} due to missing image/mask.")
-            continue  # Skip this patient
-
-        full_image_path = os.path.join(preRT_path, image_file)
-        full_mask_path = os.path.join(preRT_path, mask_file)
-                    
-        data_list.append({
-            "image": full_image_path,
-            "label": full_mask_path
-        })
-    
-    dataset = CacheDataset(data=data_list, transform=transforms, cache_rate=1.0, num_workers=4)
-    
-    # if test, return immediately
-    if subset == "test":
-        return None, DataLoader(
-            dataset,
-            batch_size=batch_size,
-            shuffle=False,
-            num_workers=4,
-            pin_memory=True,
-        )
-    
-    # else: reproducible split into train/val
-    num = len(dataset)
-    split = int(num * validation_fraction)
-    g = torch.Generator().manual_seed(0)
-    idxs = torch.randperm(num, generator=g)
-    train_idx, val_idx = idxs[split:], idxs[:split]
-
-    train_loader = DataLoader(
-        dataset,
-        batch_size=batch_size,
-        sampler=torch.utils.data.SubsetRandomSampler(train_idx, generator=g),
-        drop_last=False,
-        collate_fn=pad_list_data_collate,
+    # 2) ONE CacheDataset for the base (no random crops or heavy augs)
+    base_ds = CacheDataset(
+        data=data_list,
+        transform=Compose(base_transforms()),   # load → channel-first → resample → crop fg → normalize
+        cache_rate=1.0,
         num_workers=4,
-        pin_memory=True,
+    )
+
+    # 3) split indices once
+    N = len(base_ds)
+    n_val = int(N * validation_fraction)
+    g = torch.Generator().manual_seed(0)
+    idxs = torch.randperm(N, generator=g)
+    train_idx, val_idx = idxs[n_val:], idxs[:n_val]
+
+    # 4) wrap the *subsets* in *lightweight* Datasets that apply your train/val pipelines
+    train_ds = Dataset(
+        data=[ base_ds[i] for i in train_idx ],
+        transform=Compose(train_transforms())
+    )
+    val_ds   = Dataset(
+        data=[ base_ds[i] for i in val_idx ],
+        transform=Compose(val_transforms())
+    )
+
+    # 5) finally the PyTorch DataLoaders
+    train_loader = DataLoader(
+        train_ds, batch_size=batch_size, shuffle=True,
+        collate_fn=pad_list_data_collate, num_workers=4, pin_memory=True
     )
     val_loader = DataLoader(
-        dataset,
-        batch_size=batch_size,
-        sampler=torch.utils.data.SubsetRandomSampler(val_idx, generator=g),
-        drop_last=False,
-        collate_fn=pad_list_data_collate,
-        num_workers=4,
-        pin_memory=True,
+        val_ds, batch_size=batch_size, shuffle=False,
+        collate_fn=pad_list_data_collate, num_workers=4, pin_memory=True
     )
+
     return train_loader, val_loader
 
 
-
+def get_test_dataloader(
+    data_dir: str,
+    batch_size: int = 1,
+):
+    monai.utils.set_determinism(seed=0)
+    
+    subset_dir = os.path.join(data_dir, "test")
+    data_list = []
+    for pid in sorted(os.listdir(subset_dir)):
+        preRT = os.path.join(subset_dir, pid, "preRT")
+        img = next((f for f in os.listdir(preRT) if f.endswith("T2.nii.gz")), None)
+        msk = next((f for f in os.listdir(preRT) if f.endswith("mask.nii.gz")), None)
+        if img and msk:
+            data_list.append({
+                "image": os.path.join(preRT, img),
+                "label": os.path.join(preRT, msk),
+            })
+            
+    test_ds = CacheDataset(data=data_list, transform=test_transforms(), cache_rate=1.0, num_workers=4)
+    return None, DataLoader(
+        test_ds,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=4,
+        pin_memory=True,
+    )
 
 

@@ -9,6 +9,7 @@ High‑level training loop encapsulated in Trainer class.
 - Supports early stopping based on mean‑Dice plateau.
 """
 
+
 import torch
 import collections
 import pathlib
@@ -20,10 +21,10 @@ from monai.metrics import DiceMetric
 from monai.networks.utils import one_hot
 from monai.inferers import sliding_window_inference
 
-from models.model import get_model
-from dataloader.dataloader import get_mri_dataloader
-from utils.file_io import save_predictions, save_checkpoint, save_history_log
-from utils.metrics import set_global_seed, log_metrics, should_early_stop, is_best_model, remove_small_cc
+from src.models.model import get_model
+from src.dataloader.dataloader import get_mri_dataloader
+from src.utils.file_io import save_predictions, save_checkpoint, save_history_log
+from src.utils.metrics import set_global_seed, log_metrics, should_early_stop, is_best_model, remove_small_cc
 
 
 class Trainer:
@@ -51,7 +52,7 @@ class Trainer:
         in_channels=1,
         out_channels=3,
         checkpoint_dir=None,
-        scheduler_type="cosine",
+        scheduler_type="onecycle",
     ):
         # set seed for reproducibility (optional if done globally)
         set_global_seed(0)
@@ -74,7 +75,7 @@ class Trainer:
             assert data_dir and batch_size, \
                 "Provide either (train_loader & val_loader) or (data_dir & batch_size)"
             self.train_loader, self.val_loader = get_mri_dataloader(
-                data_dir, "train", batch_size, validation_fraction=0.1
+                data_dir, batch_size=batch_size, validation_fraction=0.1
             )
 
         # define loss: weighted Dice + CrossEntropy
@@ -108,7 +109,7 @@ class Trainer:
     def _init_scheduler(self, scheduler_type, base_lr):
         """
         Initialize learning rate scheduler.
-        Supports 'plateau' or 'cosine'.
+        Supports 'plateau', 'cosine', 'onecycle'.
         """
         if scheduler_type.lower() == "plateau":
             return torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -120,8 +121,19 @@ class Trainer:
             return torch.optim.lr_scheduler.CosineAnnealingLR(
                 self.optimizer, T_max=self.epochs, eta_min=1e-6
             )
+        elif scheduler_type.lower() == "onecycle":
+            steps_per_epoch = len(self.train_loader)
+            return torch.optim.lr_scheduler.OneCycleLR(
+                self.optimizer,
+                max_lr=base_lr,
+                epochs=self.epochs,
+                steps_per_epoch=steps_per_epoch,
+                pct_start=0.3,
+                div_factor=25,
+                final_div_factor=1e4,
+            )
         else:
-            raise ValueError("scheduler_type must be 'plateau' or 'cosine'")
+            raise ValueError("scheduler_type must be 'plateau', 'cosine', or 'onecycle'")
 
     def train_step(self, inputs, labels):
         """
@@ -160,6 +172,9 @@ class Trainer:
                 img, lbl = batch["image"].to(self.device), batch["label"].to(self.device)
                 loss, outputs = self.train_step(img, lbl)
                 self.global_step += 1
+                # step OneCycleLR per batch
+                if isinstance(self.scheduler, torch.optim.lr_scheduler.OneCycleLR):
+                    self.scheduler.step()
                 epoch_loss += loss
 
                 # compute per-batch Dice
@@ -176,22 +191,18 @@ class Trainer:
                     FP[cls] += ((preds == cls) & (true != cls)).sum().item()
                     FN[cls] += ((preds != cls) & (true == cls)).sum().item()
 
-                # save training loss for plotting
                 self.train_history["loss"][self.global_step] = loss
 
-            # summarize epoch and validate
             train_metrics = self._finalize_epoch(
                 epoch_loss, TP, FP, FN, self.train_history, len(self.train_loader)
             )
-            val_metrics = self.validate()
+            val_metrics   = self.validate()
 
-            # update scheduler
             if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
                 self.scheduler.step(val_metrics["mean_dice"])
-            else:
+            elif not isinstance(self.scheduler, torch.optim.lr_scheduler.OneCycleLR):
                 self.scheduler.step()
 
-            # log & checkpoint
             lr = self.optimizer.param_groups[0]["lr"]
             self.lr_history[epoch] = lr
             print(f"Current LR: {lr:.6f}")
@@ -216,45 +227,35 @@ class Trainer:
                 break
 
     def _finalize_epoch(self, epoch_loss, TP, FP, FN, history, loader_len):
-        """
-        Compute average loss and Dice scores for epoch end.
-        Records values into history dict.
-        Returns a dict of summary metrics.
-        """
         avg_loss = epoch_loss / loader_len
+        # record loss in history for both train & val
+        history["loss"][self.global_step] = avg_loss
         per_class, _ = self.dice_metric.aggregate()
         per_class = per_class.cpu().numpy()
         dice1, dice2 = np.nanmean(per_class, axis=0)[:2]
-        mean_dice = np.nanmean([dice1, dice2])
+        mean_dice = float(np.nanmean([dice1, dice2]))
 
-        # precision / recall
         prec1 = TP[1] / (TP[1] + FP[1] + 1e-6)
         rec1  = TP[1] / (TP[1] + FN[1] + 1e-6)
         prec2 = TP[2] / (TP[2] + FP[2] + 1e-6)
         rec2  = TP[2] / (TP[2] + FN[2] + 1e-6)
 
-        history["dice"][self.global_step] = mean_dice
         history.setdefault("dice_class1", {})[self.global_step] = dice1
         history.setdefault("dice_class2", {})[self.global_step] = dice2
+        history["dice"][self.global_step] = mean_dice
 
         return {
             "loss": avg_loss,
             "mean_dice": mean_dice,
             "dice_class1": dice1,
             "dice_class2": dice2,
-            "prec_class1": prec1,
+            "precision_class1": prec1,
             "recall_class1": rec1,
-            "prec_class2": prec2,
+            "precision_class2": prec2,
             "recall_class2": rec2,
         }
 
     def validate(self, save=True):
-        """
-        Run sliding-window inference on validation set,
-        apply small-CC cleanup, compute loss+metrics,
-        optionally save a few example predictions.
-        Returns summary metrics.
-        """
         self.model.eval()
         self.dice_metric.reset()
         total_loss = 0.0
@@ -275,7 +276,6 @@ class Trainer:
                 probs = torch.softmax(out.detach(), dim=1)
                 preds = torch.argmax(probs, dim=1)
 
-                # remove tiny connected components per-slice
                 cleaned = []
                 for b in range(preds.shape[0]):
                     arr = preds[b].cpu().numpy()
@@ -283,9 +283,8 @@ class Trainer:
                     cleaned.append(torch.from_numpy(arr))
                 preds = torch.stack(cleaned, dim=0).to(self.device)
 
-                # accumulate Dice + precision/recall
                 onehot_pred = one_hot(preds.unsqueeze(1), num_classes=3)
-                onehot_lbl = one_hot(lbl.long(), num_classes=3)
+                onehot_lbl  = one_hot(lbl.long(),   num_classes=3)
                 self.dice_metric(onehot_pred, onehot_lbl)
 
                 true = lbl.squeeze(1)
@@ -297,7 +296,6 @@ class Trainer:
                     FP[cls] += ((preds==cls)&(true!=cls)).sum().item()
                     FN[cls] += ((preds!=cls)&(true==cls)).sum().item()
 
-                # save first few preds for visualization
                 if idx < 3:
                     preds_to_save.append((img[0], lbl[0], probs[0], idx))
 
@@ -306,11 +304,12 @@ class Trainer:
             total_loss, TP, FP, FN, self.validation_history, loader_len=len(self.val_loader)
         )
 
-        # optionally dump examples
         if save and is_best_model(self.global_step, self.validation_history):
             for img, lbl, prob, i in preds_to_save:
                 save_predictions(img, lbl, prob, i, self.predictions_dir)
 
         return metrics
+
+
 
 

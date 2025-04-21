@@ -26,11 +26,10 @@ from monai.losses import DiceCELoss
 from monai.networks.utils import one_hot
 from monai.inferers import sliding_window_inference
 
-from utils.metrics import set_global_seed, remove_small_cc
-from utils.file_io import save_nifti, save_predictions
-from dataloader.dataloader import get_mri_dataloader
-from models.model import get_model
-from utils.file_io import load_checkpoint
+from src.utils.metrics import set_global_seed, remove_small_cc
+from src.utils.file_io import save_nifti, save_predictions, load_checkpoint
+from src.dataloader.dataloader import get_test_dataloader
+from src.models.model import get_model
 
 # Fix seeds for reproducibility
 default_seed = 0
@@ -50,7 +49,7 @@ def run_inference(
     model = get_model(model_type, in_channels=1, out_channels=3, pretrained=False).to(device)
     model = load_checkpoint(checkpoint, model, device)
     model.eval()
-    _, loader = get_mri_dataloader(data_dir, subset='test', batch_size=batch_size)
+    _, loader = get_test_dataloader(data_dir, batch_size=batch_size)
     out_path = Path(output_dir)
     out_path.mkdir(parents=True, exist_ok=True)
 
@@ -175,7 +174,7 @@ def ensemble_inference(
         model = load_checkpoint(ckpt, model, device)
         model.eval(); models.append(model)
 
-    _, loader = get_mri_dataloader(data_dir, subset='test', batch_size=batch_size)
+    _, loader = get_test_dataloader(data_dir, batch_size=batch_size)
     out_path = Path(output_dir); out_path.mkdir(parents=True, exist_ok=True)
 
     with torch.no_grad():

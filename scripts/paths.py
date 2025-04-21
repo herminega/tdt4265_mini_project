@@ -1,6 +1,6 @@
 # scripts/paths.py
 from pathlib import Path
-from .config import ExperimentConfig
+from scripts.config import ExperimentConfig
 
 def resolve_paths(cfg: ExperimentConfig):
     base = Path("../results") / cfg.name

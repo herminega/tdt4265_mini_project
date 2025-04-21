@@ -8,11 +8,17 @@ CLI for a single end‑to‑end training run.
 - Saves final model
 """
 
+import os, sys
+# Insert project root (one level up from scripts/) at front of sys.path
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
 from scripts.config import load_config
 from scripts.paths  import resolve_paths
-from utils.metrics import set_global_seed
-from utils.file_io import save_model
-from training.trainer import Trainer
+from src.utils.metrics import set_global_seed
+from src.utils.file_io import save_model
+from src.training.trainer import Trainer
 
 if __name__=="__main__":
     set_global_seed(0)
