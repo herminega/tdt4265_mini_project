@@ -29,7 +29,7 @@ from monai.inferers import sliding_window_inference
 from src.utils.metrics import set_global_seed, remove_small_cc
 from src.utils.file_io import save_nifti, save_predictions, load_checkpoint
 from src.dataloader.dataloader import get_test_dataloader
-from src.models.model import get_model
+from src.model.model import get_model
 
 # Fix seeds for reproducibility
 default_seed = 0

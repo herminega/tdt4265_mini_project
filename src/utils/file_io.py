@@ -135,4 +135,20 @@ def save_history_log(train_history, val_history, lr_history, path):
         json.dump(history, f, indent=4)
         
 
- 
+def load_training_checkpoint(
+    checkpoint_path: str,
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler._LRScheduler,
+    device: torch.device,
+) -> tuple[int, int]:
+    """
+    Load model, optimizer, scheduler state, and return (epoch, global_step).
+    """
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    model.load_state_dict(checkpoint["model_state"])
+    optimizer.load_state_dict(checkpoint["optimizer_state"])
+    scheduler.load_state_dict(checkpoint["scheduler_state"])
+    epoch       = checkpoint["epoch"]
+    global_step = checkpoint["global_step"]
+    return epoch, global_step

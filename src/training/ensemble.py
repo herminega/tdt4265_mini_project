@@ -15,8 +15,9 @@ from monai.data import Dataset, CacheDataset, DataLoader, pad_list_data_collate
 from scripts.config import load_config
 from src.dataloader.dataloader import train_transforms, base_transforms, val_transforms
 from src.training.trainer import Trainer
+from src.utils.file_io import load_training_checkpoint
 
-def run_kfold(experiment: str, n_folds: int = 5, seed: int = 0):
+def run_kfold(experiment: str, n_folds: int = 5, start_fold: int = 0, seed: int = 0):
     cfg  = load_config(experiment)
     base = pathlib.Path("results") / experiment
 
@@ -40,6 +41,11 @@ def run_kfold(experiment: str, n_folds: int = 5, seed: int = 0):
     # 3) get K‐fold splits
     kf = KFold(n_splits=n_folds, shuffle=True, random_state=seed)
     for fold, (tr_idx, va_idx) in enumerate(kf.split(base_ds)):
+        print(f"\n=== Fold {fold+1}/{n_folds} ===")
+        if fold < start_fold:
+            print(f"Skipping fold {fold} (already done)")
+            continue
+
         print(f"\n=== Fold {fold+1}/{n_folds} ===")
         ckpt_dir = base/f"fold{fold}"/"checkpoints"
         ckpt_dir.mkdir(parents=True, exist_ok=True)
@@ -76,6 +82,21 @@ def run_kfold(experiment: str, n_folds: int = 5, seed: int = 0):
             out_channels=3,
             scheduler_type=cfg.scheduler_type,
         )
+        
+        # 2. If there’s already a last.ckpt for this fold, load it:
+        last_ckpt = ckpt_dir/"last.ckpt"
+        if last_ckpt.exists():
+            epoch, step = load_training_checkpoint(
+                str(last_ckpt),
+                trainer.model,
+                trainer.optimizer,
+                trainer.scheduler,
+                trainer.device,
+            )
+            trainer.current_epoch = epoch
+            trainer.global_step   = step
+            print(f"Resuming fold {fold} from epoch {epoch}, step {step}…")
+
         trainer.train()
         print(f"best ckpt: {ckpt_dir/'best.ckpt'}")
 

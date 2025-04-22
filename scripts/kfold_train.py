@@ -9,4 +9,4 @@ from src.training.ensemble import run_kfold
 
 if __name__ == "__main__":
     EXPERIMENT = "exp25_nnunet"
-    run_kfold(EXPERIMENT, n_folds=5, seed=0)
+    run_kfold(EXPERIMENT, n_folds=5, start_fold=3, seed=0)

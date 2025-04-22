@@ -21,7 +21,7 @@ from monai.metrics import DiceMetric
 from monai.networks.utils import one_hot
 from monai.inferers import sliding_window_inference
 
-from src.models.model import get_model
+from src.model.model import get_model
 from src.dataloader.dataloader import get_mri_dataloader
 from src.utils.file_io import save_predictions, save_checkpoint, save_history_log
 from src.utils.metrics import set_global_seed, log_metrics, should_early_stop, is_best_model, remove_small_cc
@@ -160,7 +160,8 @@ class Trainer:
         Run full training loop over epochs.
         Logs metrics, saves checkpoints, and performs early stopping.
         """
-        for epoch in range(1, self.epochs + 1):
+        start = getattr(self, "current_epoch", 0) + 1
+        for epoch in range(start, self.epochs + 1):
             print(f"\n=== Epoch {epoch} ===")
             self.current_epoch = epoch
             self.dice_metric.reset()
